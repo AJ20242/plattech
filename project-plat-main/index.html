@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VSS portal</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="background-glow glow-1"></div>
+  <div class="background-glow glow-2"></div>
+
+  <main class="auth-shell" aria-live="polite">
+    <section class="hero-panel">
+      <img class="app-logo auth-logo" src="assistant.webp" alt="Sign in logo" />
+      <p class="badge">Secure Access</p>
+      <button id="themeToggle" class="theme-icon-btn" type="button" aria-label="Enable dark mode" title="Toggle theme">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M14.5 3.5a8.5 8.5 0 1 0 6 14.5 9 9 0 1 1-6-14.5z"></path>
+        </svg>
+      </button>
+      <h1>Welcome to Virtual Support</h1>
+      <p class="hero-copy">Manage operations with secure access, AI assistance, and end-to-end support workflows.</p>
+      <div class="hero-actions">
+        <button id="showSignIn" class="ghost-btn" type="button">I have an account</button>
+        <button id="showSignUp" class="primary-btn" type="button">Create account</button>
+      </div>
+    </section>
+
+    <section class="form-panel">
+      <div id="formCarousel" class="form-carousel">
+        <article class="form-card sign-in is-active" data-form="signin">
+          <h2>Sign In</h2>
+          <p class="form-copy">Continue to your dashboard.</p>
+          <form id="signInForm" novalidate>
+            <label>
+              Email
+              <input id="signInEmail" type="email" placeholder="you@example.com" autocomplete="email" required />
+            </label>
+            <label class="password-field">
+              Password
+              <div class="password-input-wrap">
+                <input id="signInPassword" type="password" placeholder="Enter password" autocomplete="current-password" minlength="8" required />
+                <button type="button" class="toggle-password" data-toggle-for="signInPassword" aria-label="Show password">Show</button>
+              </div>
+            </label>
+            <p class="form-hint">Use at least 8 characters.</p>
+            <p class="form-hint">Use your registered email and password to continue.</p>
+            <p id="signInMessage" class="form-message" aria-live="polite"></p>
+            <button class="primary-btn full" type="submit">Sign In</button>
+          </form>
+          <p class="switch-text">No account yet? <button type="button" class="link-btn switch" data-target="signup">Sign up</button></p>
+        </article>
+
+        <article class="form-card sign-up" data-form="signup">
+          <h2>Create Account</h2>
+          <p class="form-copy">Start your workspace in under a minute.</p>
+          <form id="signUpForm" novalidate>
+            <label>
+              Full Name
+              <input id="signUpName" type="text" placeholder="Jane Doe" autocomplete="name" required />
+            </label>
+            <label>
+              Role
+              <select id="signUpRole" required>
+                <option value="student">Student</option>
+                <option value="professor" selected>Professor</option>
+                <option value="administrator">Administrator</option>
+              </select>
+            </label>
+            <label id="adminCodeWrap" class="hidden password-field">
+              Admin Access Code
+              <div class="password-input-wrap">
+                <input id="adminCode" type="password" placeholder="Enter admin code" autocomplete="off" />
+                <button type="button" class="toggle-password" data-toggle-for="adminCode" aria-label="Show password">Show</button>
+              </div>
+              <small class="form-hint">Demo default code: ADMIN123</small>
+            </label>
+            <label>
+              Email
+              <input id="signUpEmail" type="email" placeholder="you@example.com" autocomplete="email" required />
+            </label>
+            <label class="password-field">
+              Password
+              <div class="password-input-wrap">
+                <input id="signUpPassword" type="password" placeholder="Create password" autocomplete="new-password" required />
+                <button type="button" class="toggle-password" data-toggle-for="signUpPassword" aria-label="Show password">Show</button>
+              </div>
+            </label>
+            <div id="passwordStrength" class="password-strength neutral">Strength: -</div>
+            <label class="password-field">
+              Confirm Password
+              <div class="password-input-wrap">
+                <input id="confirmPassword" type="password" placeholder="Re-enter password" autocomplete="new-password" required />
+                <button type="button" class="toggle-password" data-toggle-for="confirmPassword" aria-label="Show password">Show</button>
+              </div>
+            </label>
+            <p class="form-hint">Password must include uppercase, lowercase, number, and symbol, with at least 8 characters.</p>
+            <p id="signUpMessage" class="form-message" aria-live="polite"></p>
+            <button class="primary-btn full" type="submit">Sign Up</button>
+          </form>
+          <p class="switch-text">Already registered? <button type="button" class="link-btn switch" data-target="signin">Sign in</button></p>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <script src="script.js"></script>
+</body>
+</html>

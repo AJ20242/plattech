@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Admin Control Panel</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="admin.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Admin Control Panel</div>
+    <div class="topbar-actions">
+      <a class="nav-link" href="dashboard.html">Dashboard</a>
+      <a class="nav-link" href="tickets.html">Tickets</a>
+      <button id="themeToggle" class="icon-btn" type="button" aria-label="Enable dark mode" title="Toggle theme">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M14.5 3.5a8.5 8.5 0 1 0 6 14.5 9 9 0 1 1-6-14.5z"></path>
+        </svg>
+      </button>
+      <button id="logoutBtn" class="logout-btn" type="button">Log out</button>
+    </div>
+  </header>
+
+  <main class="admin-shell">
+    <section class="hero-card">
+      <h1>Users and Ticket Operations</h1>
+      <p id="adminEmail">Checking session...</p>
+      <div class="hero-actions">
+        <button id="refreshBtn" class="action-btn" type="button">Refresh Data</button>
+        <p id="panelMessage" class="panel-message" aria-live="polite"></p>
+      </div>
+    </section>
+
+    <section class="stats-row">
+      <article class="stat-card">
+        <p class="stat-label">Total Users</p>
+        <p id="totalUsers" class="stat-value">0</p>
+      </article>
+      <article class="stat-card">
+        <p class="stat-label">Total Tickets</p>
+        <p id="totalTickets" class="stat-value">0</p>
+      </article>
+      <article class="stat-card">
+        <p class="stat-label">Open Tickets</p>
+        <p id="openTickets" class="stat-value">0</p>
+      </article>
+      <article class="stat-card">
+        <p class="stat-label">Resolved Tickets</p>
+        <p id="resolvedTickets" class="stat-value">0</p>
+      </article>
+    </section>
+
+    <section class="grid-panels">
+      <article class="panel-card">
+        <div class="panel-head">
+          <h2>Manage Users</h2>
+          <p>Update user roles instantly.</p>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Name</th>
+                <th>Email</th>
+                <th>Role</th>
+                <th>Created</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="usersTableBody"></tbody>
+          </table>
+        </div>
+      </article>
+
+      <article class="panel-card">
+        <div class="panel-head">
+          <h2>Manage Tickets</h2>
+          <p>Monitor and update ticket status.</p>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Ticket ID</th>
+                <th>User</th>
+                <th>Subject</th>
+                <th>Priority</th>
+                <th>Status</th>
+                <th>Updated</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="ticketsTableBody"></tbody>
+          </table>
+        </div>
+      </article>
+    </section>
+
+    <section class="panel-card audit-card">
+      <div class="panel-head">
+        <h2>Audit Integrity Snapshot</h2>
+        <p id="chainStatus">Verifying chain...</p>
+      </div>
+      <div class="table-wrap">
+        <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Event</th>
+            <th>User</th>
+            <th>Timestamp</th>
+            <th>Prev Hash</th>
+            <th>Entry Hash</th>
+          </tr>
+        </thead>
+        <tbody id="auditTableBody"></tbody>
+      </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="admin.js"></script>
+  <script src="role-ui.js"></script>
+</body>
+</html>
+

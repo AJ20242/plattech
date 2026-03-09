@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Material &amp; Activities</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="material.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Material &amp; Activities</div>
+    <div class="topbar-actions">
+      <a class="nav-link" href="dashboard.html">Dashboard</a>
+      <a class="nav-link" href="tickets.html">Tickets</a>
+      <a class="nav-link material-link" href="material.html">Material</a>
+      <a class="nav-link attendance-link" href="attendance.html">Attendance</a>
+      <a class="nav-link" href="chat.html">AI NLP Chat</a>
+      <button id="themeToggle" class="icon-btn" type="button" aria-label="Enable dark mode" title="Toggle theme">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M14.5 3.5a8.5 8.5 0 1 0 6 14.5 9 9 0 1 1-6-14.5z"></path>
+        </svg>
+      </button>
+      <button id="logoutBtn" class="logout-btn" type="button">Log out</button>
+    </div>
+  </header>
+
+  <main class="material-shell">
+    <p id="userBadge" class="muted">Loading session...</p>
+    
+    <div class="tabs">
+      <button type="button" class="tab-btn active" data-tab="activities">Activities</button>
+      <button type="button" class="tab-btn" data-tab="quizzes">Quizzes</button>
+      <button type="button" class="tab-btn" data-tab="exams">Exams</button>
+    </div>
+
+    <!-- Activities Tab -->
+    <div id="tab-activities" class="tab-content active">
+      <section id="materialFormCard" class="material-form-card">
+        <h1>Add Activity</h1>
+        <p id="materialMsg" class="form-msg" aria-live="polite"></p>
+        <form id="materialForm" class="material-form">
+          <label>
+            Title
+            <input id="activityTitle" type="text" placeholder="e.g. Week 1 – Introduction" required />
+          </label>
+          <label>
+            Description
+            <textarea id="activityDescription" placeholder="Instructions or notes for this activity..." rows="4"></textarea>
+          </label>
+          <button id="materialSubmitBtn" type="submit">Add Activity</button>
+        </form>
+      </section>
+      <section class="activities-card">
+        <h2>Activities</h2>
+        <div id="activitiesList" class="activities-list"></div>
+      </section>
+    </div>
+
+    <!-- Quizzes Tab -->
+    <div id="tab-quizzes" class="tab-content">
+      <section id="quizFormCard" class="quiz-form-card">
+        <h1>Add Quiz</h1>
+        <p id="quizMsg" class="form-msg" aria-live="polite"></p>
+        <form id="quizForm" class="quiz-form">
+          <label>
+            Title
+            <input id="quizTitle" type="text" placeholder="e.g. Week 1 Quiz" required />
+          </label>
+          <label>
+            Description
+            <textarea id="quizDescription" placeholder="Instructions or notes for this quiz..." rows="3"></textarea>
+          </label>
+          <button id="quizSubmitBtn" type="submit">Add Quiz</button>
+        </form>
+      </section>
+      <section class="quiz-card">
+        <h2>Quizzes</h2>
+        <div id="quizList" class="quiz-list"></div>
+      </section>
+    </div>
+
+    <!-- Exams Tab -->
+    <div id="tab-exams" class="tab-content">
+      <section id="examFormCard" class="quiz-form-card">
+        <h1>Add Exam</h1>
+        <p id="examMsg" class="form-msg" aria-live="polite"></p>
+        <form id="examForm" class="quiz-form">
+          <label>
+            Title
+            <input id="examTitle" type="text" placeholder="e.g. Midterm Exam" required />
+          </label>
+          <label>
+            Description
+            <textarea id="examDescription" placeholder="Instructions or notes for this exam..." rows="3"></textarea>
+          </label>
+          <button id="examSubmitBtn" type="submit">Add Exam</button>
+        </form>
+      </section>
+      <section class="quiz-card">
+        <h2>Exams</h2>
+        <div id="examList" class="quiz-list"></div>
+      </section>
+    </div>
+  </main>
+
+  <script src="material.js"></script>
+  <script src="role-ui.js"></script>
+</body>
+</html>

@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Virtual Support Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="dashboard.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img class="app-logo top-logo" src="bb.jpg" alt="Dashboard logo" />
+      <span>Virtual Support System</span>
+    </div>
+    <div class="topbar-actions">
+      <a id="adminLink" class="chat-link hidden" href="admin.html">Admin Verify</a>
+      <a class="chat-link" href="tickets.html">Tickets</a>
+      <a class="chat-link material-link" href="material.html">Material</a>
+      <a class="chat-link" href="chat.html">AI NLP Chat</a>
+      <div class="notif-wrap">
+        <button id="notifBtn" class="icon-btn" type="button" aria-label="Open notifications" title="Notifications">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 22a2.5 2.5 0 0 0 2.45-2h-4.9A2.5 2.5 0 0 0 12 22Zm7-5h-1V11a6 6 0 1 0-12 0v6H5a1 1 0 0 0 0 2h14a1 1 0 1 0 0-2Z"></path>
+          </svg>
+          <span id="notifCount" class="notif-count hidden">0</span>
+        </button>
+        <div id="notifPanel" class="notif-panel hidden">
+          <div class="notif-head">
+            <p class="notif-title">Priority Reminders</p>
+            <button id="notifToggle" class="notif-toggle-btn" type="button">Enable</button>
+          </div>
+          <p id="notifCounts" class="notif-counts">Total reminders: 0 | Unread: 0</p>
+          <p id="notifHint" class="notif-hint">Enable notifications to use this feature.</p>
+          <div id="notifList" class="notif-list"></div>
+        </div>
+      </div>
+      <button id="themeToggle" class="icon-btn" type="button" aria-label="Enable dark mode" title="Toggle theme">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M14.5 3.5a8.5 8.5 0 1 0 6 14.5 9 9 0 1 1-6-14.5z"></path>
+        </svg>
+      </button>
+      <button id="logoutBtn" class="logout-btn" type="button">Log out</button>
+    </div>
+  </header>
+
+  <main class="dashboard">
+    <section class="welcome">
+      <h1 id="welcomeText">Welcome</h1>
+      <p id="subText">You are signed in.</p>
+    </section>
+
+    <section id="attendanceCards" class="cards">
+      <article class="card">
+        <p class="label">Present</p>
+        <p id="presentCount" class="value">0</p>
+      </article>
+      <article class="card">
+        <p class="label">Late</p>
+        <p id="lateCount" class="value">0</p>
+      </article>
+      <article class="card">
+        <p class="label">Absent</p>
+        <p id="absentCount" class="value">0</p>
+      </article>
+    </section>
+
+    <section class="audit">
+      <div class="audit-head">
+        <h2>Blockchain Audit Records</h2>
+        <p id="chainStatus">Checking integrity...</p>
+      </div>
+      <div id="auditList" class="audit-list"></div>
+    </section>
+  </main>
+
+  <script src="dashboard.js"></script>
+  <script src="role-ui.js"></script>
+</body>
+</html>

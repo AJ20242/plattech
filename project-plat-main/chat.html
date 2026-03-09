@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI NLP Chat</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="chat.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Virtual Support AI Chat</div>
+    <div class="topbar-actions">
+      <a class="nav-link" href="dashboard.html">Dashboard</a>
+      <a class="nav-link material-link" href="material.html">Material</a>
+      <button id="themeToggle" class="icon-btn" type="button" aria-label="Enable dark mode" title="Toggle theme">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M14.5 3.5a8.5 8.5 0 1 0 6 14.5 9 9 0 1 1-6-14.5z"></path>
+        </svg>
+      </button>
+      <button id="logoutBtn" class="logout-btn" type="button">Log out</button>
+    </div>
+  </header>
+
+  <main class="chat-shell">
+    <section class="chat-panel">
+      <div class="chat-head">
+        <div class="chat-head-row">
+          <h1>AI NLP Support Assistant</h1>
+          <div class="chat-head-actions">
+            <button id="voiceBtn" class="clear-btn" type="button" title="Voice to text" aria-label="Start voice input">Voice</button>
+            <button id="clearChatBtn" class="clear-btn" type="button">Clear chat</button>
+          </div>
+        </div>
+        <p id="userBadge">Signed in</p>
+        <p class="live-state"><span class="live-dot"></span>Live conversation active</p>
+      </div>
+
+      <div id="chatMessages" class="chat-messages" aria-live="polite"></div>
+      <div id="typingState" class="typing-state hidden">Assistant is typing...</div>
+
+      <div class="quick-prompts">
+        <button class="quick-btn" type="button" data-prompt="Summarize my current support status.">Summarize status</button>
+        <button class="quick-btn" type="button" data-prompt="How can I improve response time for tickets?">Improve ticket flow</button>
+        <button class="quick-btn" type="button" data-prompt="Give me a 3-step action plan for today.">3-step action plan</button>
+      </div>
+
+      <form id="chatForm" class="chat-input">
+        <input id="chatText" type="text" placeholder="Type your question..." required />
+        <button id="sendBtn" type="submit">Send</button>
+      </form>
+      <p id="voiceState" class="voice-state hidden"></p>
+    </section>
+  </main>
+
+  <script src="chat.js"></script>
+  <script src="role-ui.js"></script>
+</body>
+</html>
+

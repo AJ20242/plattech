@@ -1,0 +1,380 @@
+/* Tabs */
+.tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 8px;
+}
+
+.tab-btn {
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+  border-radius: 10px 10px 0 0;
+  padding: 10px 20px;
+  font-size: 0.95rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.tab-btn:hover {
+  background: var(--bg);
+}
+
+.tab-btn.active {
+  background: var(--primary);
+  color: #fff;
+  border-color: var(--primary);
+}
+
+.tab-content {
+  display: none;
+}
+
+.tab-content.active {
+  display: block;
+}
+
+:root {
+  --bg: #eef1ec;
+  --text: #0f1722;
+  --muted: #546072;
+  --card: #ffffff;
+  --border: #d6dde6;
+  --primary: #1e6b5d;
+  --shadow: 0 16px 36px rgba(16, 19, 25, 0.14);
+}
+
+[data-theme="dark"] {
+  --bg: #0f141c;
+  --text: #e8eef6;
+  --muted: #9caec2;
+  --card: #121d28;
+  --border: #304253;
+  --primary: #2e9b86;
+  --shadow: 0 16px 36px rgba(5, 10, 14, 0.5);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: "Space Grotesk", sans-serif;
+  color: var(--text);
+  background: radial-gradient(circle at 10% 10%, #fcf9f2 0%, transparent 36%),
+    radial-gradient(circle at 86% 18%, #def3ec 0%, transparent 42%),
+    var(--bg);
+}
+
+.topbar {
+  max-width: 1100px;
+  margin: 18px auto 0;
+  padding: 12px 18px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.brand { font-weight: 700; }
+
+.topbar-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.nav-link,
+.logout-btn {
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 8px 12px;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.icon-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+  display: grid;
+  place-items: center;
+  padding: 0;
+  cursor: pointer;
+}
+
+.icon-btn svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+
+.material-shell {
+  max-width: 1100px;
+  margin: 18px auto 32px;
+  padding: 0 8px;
+  display: grid;
+  gap: 14px;
+}
+
+.material-form-card,
+.activities-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 16px;
+  box-shadow: var(--shadow);
+}
+
+.muted {
+  margin: 0 0 8px;
+  color: var(--muted);
+}
+
+.material-form {
+  display: grid;
+  gap: 10px;
+}
+
+.material-form label {
+  display: grid;
+  gap: 6px;
+  font-size: 0.9rem;
+}
+
+.material-form input,
+.material-form textarea {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 11px;
+  font: inherit;
+  background: var(--card);
+  color: var(--text);
+}
+
+.material-form textarea {
+  resize: vertical;
+  min-height: 80px;
+}
+
+.material-form button {
+  border: 0;
+  border-radius: 10px;
+  padding: 10px 13px;
+  color: #fff;
+  background: linear-gradient(135deg, var(--primary) 0%, #2f8b79 100%);
+  cursor: pointer;
+}
+
+.form-msg {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 0.9rem;
+  min-height: 1.2rem;
+}
+
+.form-msg[data-state="success"] { color: var(--primary); }
+.form-msg[data-state="error"] { color: #c53030; }
+
+.activities-list {
+  display: grid;
+  gap: 10px;
+}
+
+.activity-item {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.activity-item-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.activity-item h3 {
+  margin: 0 0 6px;
+  font-size: 1rem;
+}
+
+.activity-item p {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--muted);
+  white-space: pre-wrap;
+}
+
+.activity-meta {
+  margin-top: 8px;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.activity-item-actions {
+  flex-shrink: 0;
+}
+
+.delete-activity-btn {
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.delete-activity-btn:hover {
+  background: rgba(197, 48, 48, 0.15);
+  border-color: #c53030;
+  color: #c53030;
+}
+
+.empty-activities {
+  color: var(--muted);
+  font-size: 0.95rem;
+  padding: 16px 0;
+}
+
+/* Quiz/Exam styles */
+.quiz-form-card,
+.quiz-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 16px;
+  box-shadow: var(--shadow);
+}
+
+.quiz-form {
+  display: grid;
+  gap: 10px;
+}
+
+.quiz-form label {
+  display: grid;
+  gap: 6px;
+  font-size: 0.9rem;
+}
+
+.quiz-form input,
+.quiz-form textarea,
+.quiz-form select {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 11px;
+  font: inherit;
+  background: var(--card);
+  color: var(--text);
+}
+
+.quiz-form textarea {
+  resize: vertical;
+  min-height: 80px;
+}
+
+.quiz-form button {
+  border: 0;
+  border-radius: 10px;
+  padding: 10px 13px;
+  color: #fff;
+  background: linear-gradient(135deg, var(--primary) 0%, #2f8b79 100%);
+  cursor: pointer;
+}
+
+.quiz-list {
+  display: grid;
+  gap: 10px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.quiz-item {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.quiz-item-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.quiz-item h3 {
+  margin: 0 0 6px;
+  font-size: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.quiz-type-badge {
+  font-size: 0.7rem;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--primary);
+  color: #fff;
+  font-weight: 500;
+}
+
+.quiz-type-badge.exam {
+  background: #c53030;
+}
+
+.quiz-item p {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--muted);
+  white-space: pre-wrap;
+}
+
+.quiz-meta {
+  margin-top: 8px;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.quiz-item-actions {
+  flex-shrink: 0;
+}
+
+.delete-quiz-btn {
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.delete-quiz-btn:hover {
+  background: rgba(197, 48, 48, 0.15);
+  border-color: #c53030;
+  color: #c53030;
+}
+
+.empty-quizzes {
+  color: var(--muted);
+  font-size: 0.95rem;
+  padding: 16px 0;
+}
