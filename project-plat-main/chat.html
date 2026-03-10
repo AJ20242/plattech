@@ -15,6 +15,7 @@
     <div class="topbar-actions">
       <a class="nav-link" href="dashboard.html">Dashboard</a>
       <a class="nav-link material-link" href="material.html">Material</a>
+
       <button id="themeToggle" class="icon-btn" type="button" aria-label="Enable dark mode" title="Toggle theme">
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="M14.5 3.5a8.5 8.5 0 1 0 6 14.5 9 9 0 1 1-6-14.5z"></path>
@@ -31,6 +32,7 @@
           <h1>AI NLP Support Assistant</h1>
           <div class="chat-head-actions">
             <button id="voiceBtn" class="clear-btn" type="button" title="Voice to text" aria-label="Start voice input">Voice</button>
+            <button id="langBtn" class="clear-btn" type="button" title="Toggle voice language">ENG</button>
             <button id="clearChatBtn" class="clear-btn" type="button">Clear chat</button>
           </div>
         </div>
@@ -51,12 +53,23 @@
         <input id="chatText" type="text" placeholder="Type your question..." required />
         <button id="sendBtn" type="submit">Send</button>
       </form>
+
       <p id="voiceState" class="voice-state hidden"></p>
     </section>
   </main>
 
   <script src="chat.js"></script>
   <script src="role-ui.js"></script>
+
+  <script>
+    (function () {
+      const params = new URLSearchParams(window.location.search);
+      const q = params.get("q");
+      if (!q) return;
+
+      const input = document.getElementById("chatText");
+      if (input) input.value = q;
+    })();
+  </script>
 </body>
 </html>
-

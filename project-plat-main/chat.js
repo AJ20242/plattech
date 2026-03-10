@@ -1,274 +1,387 @@
-const THEME_KEY = 'vss-theme';
+const THEME_KEY = "vss-theme";
 
-const themeToggle = document.getElementById('themeToggle');
-const logoutBtn = document.getElementById('logoutBtn');
-const userBadge = document.getElementById('userBadge');
-const chatMessages = document.getElementById('chatMessages');
-const chatForm = document.getElementById('chatForm');
-const chatText = document.getElementById('chatText');
-const voiceBtn = document.getElementById('voiceBtn');
-const voiceState = document.getElementById('voiceState');
-const sendBtn = document.getElementById('sendBtn');
-const clearChatBtn = document.getElementById('clearChatBtn');
-const typingState = document.getElementById('typingState');
-const quickButtons = document.querySelectorAll('.quick-btn');
-let historyPoll = null;
-let lastHistorySignature = '';
+const themeToggle = document.getElementById("themeToggle");
+const logoutBtn = document.getElementById("logoutBtn");
+const clearChatBtn = document.getElementById("clearChatBtn");
+const voiceBtn = document.getElementById("voiceBtn");
+const voiceState = document.getElementById("voiceState");
+const userBadge = document.getElementById("userBadge");
+
+const chatForm = document.getElementById("chatForm");
+const chatText = document.getElementById("chatText");
+const sendBtn = document.getElementById("sendBtn");
+const chatMessages = document.getElementById("chatMessages");
+const typingState = document.getElementById("typingState");
+
+const quickButtons = document.querySelectorAll(".quick-btn");
+const langBtn = document.getElementById("langBtn");
+
+let currentVoiceLang = "en-US";
 let recognition = null;
 let isListening = false;
-const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+let currentUtterance = null;
 
 function getPreferredTheme() {
   const saved = localStorage.getItem(THEME_KEY);
-  if (saved === 'light' || saved === 'dark') return saved;
-  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  if (saved === "light" || saved === "dark") return saved;
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
 function applyTheme(theme) {
-  document.documentElement.setAttribute('data-theme', theme);
-  themeToggle.setAttribute('aria-label', theme === 'dark' ? 'Enable light mode' : 'Enable dark mode');
-}
-
-function appendMessage(role, text) {
-  const item = document.createElement('article');
-  item.className = `msg ${role === 'assistant' ? 'bot' : role}`;
-  item.textContent = text;
-  chatMessages.appendChild(item);
-  chatMessages.scrollTop = chatMessages.scrollHeight;
-}
-
-function clearMessages() {
-  chatMessages.innerHTML = '';
-}
-
-function historySignature(history) {
-  return JSON.stringify(history || []);
+  document.documentElement.setAttribute("data-theme", theme);
+  if (themeToggle) {
+    themeToggle.setAttribute(
+      "aria-label",
+      theme === "dark" ? "Enable light mode" : "Enable dark mode"
+    );
+  }
 }
 
 async function getCurrentUser() {
-  const response = await fetch('/api/auth/me', { credentials: 'same-origin' });
-  if (!response.ok) return null;
-  return response.json();
+  try {
+    const response = await fetch("/api/auth/me", { credentials: "same-origin" });
+    if (!response.ok) return null;
+    return await response.json();
+  } catch {
+    return null;
+  }
 }
 
-async function sendMessage(message) {
-  const response = await fetch('/api/chat', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'same-origin',
-    body: JSON.stringify({ message })
-  });
-  const data = await response.json().catch(() => ({ reply: 'Unexpected server response.' }));
-  if (!response.ok) throw new Error(data.message || 'Chat request failed.');
-  return data;
+function escapeHtml(value) {
+  return String(value || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
 }
 
-async function getChatHistory() {
-  const response = await fetch('/api/chat/history', { credentials: 'same-origin' });
-  const data = await response.json().catch(() => ({ history: [] }));
-  if (!response.ok) throw new Error(data.message || 'Failed to load chat history.');
-  return data.history || [];
-}
-
-async function clearChatHistory() {
-  const response = await fetch('/api/chat/history', {
-    method: 'DELETE',
-    credentials: 'same-origin'
-  });
-  const data = await response.json().catch(() => ({ message: 'Failed to clear chat.' }));
-  if (!response.ok) throw new Error(data.message || 'Failed to clear chat history.');
-  return data;
+function renderMessage(role, content) {
+  const msg = document.createElement("div");
+  msg.className = `msg ${role === "assistant" ? "bot" : "user"}`;
+  msg.innerHTML = escapeHtml(content).replace(/\n/g, "<br>");
+  chatMessages.appendChild(msg);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
 }
 
 function renderHistory(history) {
-  clearMessages();
-  const items = Array.isArray(history) ? history : [];
-  if (items.length === 0) {
-    appendMessage(
-      'assistant',
-      'Hello. I can handle open-ended conversations. Ask anything, and I will keep context across messages.'
+  chatMessages.innerHTML = "";
+  (history || []).forEach((item) => {
+    renderMessage(item.role, item.content);
+  });
+}
+
+function setTyping(visible) {
+  typingState.classList.toggle("hidden", !visible);
+}
+
+function setVoiceState(text = "", show = false) {
+  voiceState.textContent = text;
+  voiceState.classList.toggle("hidden", !show);
+}
+
+function setListeningUI(listening) {
+  isListening = listening;
+  if (voiceBtn) {
+    voiceBtn.classList.toggle("is-listening", listening);
+    voiceBtn.textContent = listening ? "Listening..." : "Voice";
+    voiceBtn.setAttribute(
+      "aria-label",
+      listening ? "Stop voice input" : "Start voice input"
     );
-    return;
-  }
-  items.forEach((item) => appendMessage(item.role || 'assistant', item.content || ''));
-  lastHistorySignature = historySignature(items);
-}
-
-async function syncHistory(force = false) {
-  const history = await getChatHistory();
-  const signature = historySignature(history);
-  if (force || signature !== lastHistorySignature) {
-    renderHistory(history);
   }
 }
 
-function startHistoryPolling() {
-  if (historyPoll) clearInterval(historyPoll);
-  historyPoll = setInterval(() => {
-    syncHistory(false).catch(() => {});
-  }, 4000);
-}
-
-function setVoiceState(message, isError = false) {
-  if (!voiceState) return;
-  if (!message) {
-    voiceState.textContent = '';
-    voiceState.classList.add('hidden');
-    voiceState.style.color = '';
-    return;
+function stopSpeaking() {
+  if ("speechSynthesis" in window) {
+    window.speechSynthesis.cancel();
   }
-  voiceState.textContent = message;
-  voiceState.classList.remove('hidden');
-  voiceState.style.color = isError ? '#ff9db0' : '';
+  currentUtterance = null;
 }
 
-function setVoiceButtonState(listening) {
-  if (!voiceBtn) return;
-  voiceBtn.textContent = listening ? 'Stop' : 'Voice';
-  voiceBtn.classList.toggle('is-listening', listening);
-  voiceBtn.setAttribute('aria-label', listening ? 'Stop voice input' : 'Start voice input');
+function speakText(text) {
+  if (!("speechSynthesis" in window)) return;
+
+  const cleanText = String(text || "").trim();
+  if (!cleanText) return;
+
+  window.speechSynthesis.cancel();
+
+  const utterance = new SpeechSynthesisUtterance(cleanText);
+  utterance.rate = 1;
+  utterance.pitch = 1;
+  utterance.volume = 1;
+
+  const voices = window.speechSynthesis.getVoices();
+  const englishVoice =
+    voices.find(
+      (v) =>
+        /en/i.test(v.lang) &&
+        /female|zira|aria|samantha|google us english/i.test(v.name)
+    ) ||
+    voices.find((v) => /en/i.test(v.lang)) ||
+    null;
+
+  if (englishVoice) utterance.voice = englishVoice;
+
+  currentUtterance = utterance;
+  window.speechSynthesis.speak(utterance);
 }
 
-function initSpeechRecognition() {
-  if (!voiceBtn) return;
+async function loadHistory() {
+  try {
+    const response = await fetch("/api/chat/history", {
+      credentials: "same-origin"
+    });
+
+    if (!response.ok) return;
+
+    const data = await response.json();
+    renderHistory(data.history || []);
+  } catch (error) {
+    console.error("Failed to load chat history:", error);
+  }
+}
+
+async function sendMessage(message) {
+  const text = String(message || "").trim();
+  if (!text) return;
+
+  renderMessage("user", text);
+  chatText.value = "";
+  sendBtn.disabled = true;
+  setTyping(true);
+  setVoiceState("", false);
+
+  try {
+    const response = await fetch("/api/chat", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      credentials: "same-origin",
+      body: JSON.stringify({ message: text })
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      throw new Error(data.detail || data.message || "Chat request failed.");
+    }
+
+    const reply = String(data.reply || "").trim() || "No reply generated.";
+    renderMessage("assistant", reply);
+    speakText(reply);
+  } catch (error) {
+    renderMessage("assistant", error.message || "Chat request failed.");
+  } finally {
+    setTyping(false);
+    sendBtn.disabled = false;
+    chatText.focus();
+  }
+}
+
+async function clearChat() {
+  try {
+    await fetch("/api/chat/history", {
+      method: "DELETE",
+      credentials: "same-origin"
+    });
+    await loadHistory();
+    stopSpeaking();
+    setVoiceState("Chat history cleared.", true);
+    setTimeout(() => setVoiceState("", false), 1600);
+  } catch (error) {
+    setVoiceState("Failed to clear chat.", true);
+  }
+}
+
+function setupVoiceRecognition() {
+  const SpeechRecognition =
+    window.SpeechRecognition || window.webkitSpeechRecognition;
+
   if (!SpeechRecognition) {
-    voiceBtn.disabled = true;
-    voiceBtn.title = 'Voice input is not supported in this browser';
+    if (voiceBtn) voiceBtn.disabled = true;
+    if (langBtn) langBtn.disabled = true;
+    setVoiceState("Voice input is not supported in this browser.", true);
     return;
   }
 
   recognition = new SpeechRecognition();
-  recognition.lang = 'en-US';
+  recognition.lang = currentVoiceLang;
   recognition.interimResults = true;
+  recognition.maxAlternatives = 1;
   recognition.continuous = false;
 
+  let finalTranscript = "";
+
   recognition.onstart = () => {
-    isListening = true;
-    setVoiceButtonState(true);
-    setVoiceState('Listening...');
+    finalTranscript = "";
+    setListeningUI(true);
+    setVoiceState(
+      currentVoiceLang === "fil-PH"
+        ? "Listening... Maaari ka nang magsalita."
+        : "Listening... Speak your question now.",
+      true
+    );
+    stopSpeaking();
   };
 
   recognition.onresult = (event) => {
-    let transcript = '';
-    for (let i = event.resultIndex; i < event.results.length; i += 1) {
-      transcript += event.results[i][0].transcript;
+    let interimTranscript = "";
+
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const transcript = event.results[i][0].transcript;
+      if (event.results[i].isFinal) {
+        finalTranscript += transcript + " ";
+      } else {
+        interimTranscript += transcript;
+      }
     }
-    chatText.value = transcript.trim();
-    if (chatText.value) setVoiceState('Voice captured. Edit if needed, then send.');
+
+    const combined = `${finalTranscript}${interimTranscript}`.trim();
+    chatText.value = combined;
+
+    if (combined) {
+      setVoiceState(`Heard: ${combined}`, true);
+    }
   };
 
   recognition.onerror = (event) => {
-    const errCode = String(event.error || 'unknown');
-    if (errCode === 'not-allowed') {
-      setVoiceState('Microphone permission was denied.', true);
-    } else {
-      setVoiceState(`Voice input error: ${errCode}`, true);
+    setListeningUI(false);
+
+    if (event.error === "not-allowed") {
+      setVoiceState("Microphone permission was denied.", true);
+      return;
     }
+
+    if (event.error === "no-speech") {
+      setVoiceState("No speech detected. Try again.", true);
+      return;
+    }
+
+    setVoiceState(`Voice error: ${event.error}`, true);
   };
 
   recognition.onend = () => {
-    isListening = false;
-    setVoiceButtonState(false);
-    if (!chatText.value.trim()) {
-      setVoiceState('');
-      return;
-    }
-    chatText.focus();
-  };
+    const finalText = chatText.value.trim();
+    setListeningUI(false);
 
-  voiceBtn.addEventListener('click', () => {
-    if (!recognition) {
-      setVoiceState('Voice input is not supported in this browser.', true);
-      return;
+    if (finalText) {
+      setVoiceState("Voice captured. Sending question...", true);
+      sendMessage(finalText);
+    } else {
+      setVoiceState("Voice input stopped.", true);
     }
-    if (isListening) {
-      recognition.stop();
-      return;
-    }
-    setVoiceState('');
+  };
+}
+
+function toggleVoiceInput() {
+  if (!recognition) return;
+
+  stopSpeaking();
+
+  if (isListening) {
+    recognition.stop();
+    setVoiceState("Voice input stopped.", true);
+    return;
+  }
+
+  try {
+    recognition.lang = currentVoiceLang;
     recognition.start();
+  } catch (error) {
+    setVoiceState("Voice input is already active.", true);
+  }
+}
+
+function handleQuickPrompt(prompt) {
+  chatText.value = prompt;
+  sendMessage(prompt);
+}
+
+function loadQuestionFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const q = params.get("q");
+  if (!q) return;
+  chatText.value = q;
+}
+
+if (themeToggle) {
+  themeToggle.addEventListener("click", () => {
+    const current = document.documentElement.getAttribute("data-theme") || "light";
+    const next = current === "dark" ? "light" : "dark";
+    applyTheme(next);
+    localStorage.setItem(THEME_KEY, next);
   });
 }
 
-applyTheme(getPreferredTheme());
-
-themeToggle.addEventListener('click', () => {
-  const current = document.documentElement.getAttribute('data-theme') || 'light';
-  const next = current === 'dark' ? 'light' : 'dark';
-  applyTheme(next);
-  localStorage.setItem(THEME_KEY, next);
-});
-
-logoutBtn.addEventListener('click', async () => {
-  await fetch('/api/auth/logout', {
-    method: 'POST',
-    credentials: 'same-origin'
+if (logoutBtn) {
+  logoutBtn.addEventListener("click", async () => {
+    await fetch("/api/auth/logout", {
+      method: "POST",
+      credentials: "same-origin"
+    });
+    window.location.href = "index.html";
   });
-  window.location.href = 'index.html';
-});
+}
 
-chatForm.addEventListener('submit', async (event) => {
-  event.preventDefault();
-  const message = chatText.value.trim();
-  if (!message) return;
+if (chatForm) {
+  chatForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const text = chatText.value.trim();
+    if (!text) return;
+    await sendMessage(text);
+  });
+}
 
-  appendMessage('user', message);
-  chatText.value = '';
-  sendBtn.disabled = true;
-  sendBtn.textContent = 'Sending...';
-  typingState.classList.remove('hidden');
+if (clearChatBtn) {
+  clearChatBtn.addEventListener("click", clearChat);
+}
 
-  try {
-    const result = await sendMessage(message);
-    if (Array.isArray(result.history)) {
-      renderHistory(result.history);
+if (voiceBtn) {
+  voiceBtn.addEventListener("click", toggleVoiceInput);
+}
+
+if (langBtn) {
+  langBtn.addEventListener("click", () => {
+    if (currentVoiceLang === "en-US") {
+      currentVoiceLang = "fil-PH";
+      langBtn.textContent = "FIL";
+      setVoiceState("Voice language set to Filipino / Taglish.", true);
     } else {
-      appendMessage('assistant', result.reply || 'No reply.');
+      currentVoiceLang = "en-US";
+      langBtn.textContent = "ENG";
+      setVoiceState("Voice language set to English.", true);
     }
-  } catch (error) {
-    appendMessage('assistant', error.message || 'Unable to get AI response right now.');
-  } finally {
-    sendBtn.disabled = false;
-    sendBtn.textContent = 'Send';
-    typingState.classList.add('hidden');
-    chatText.focus();
-  }
-});
 
-clearChatBtn.addEventListener('click', async () => {
-  clearChatBtn.disabled = true;
-  clearChatBtn.textContent = 'Clearing...';
-  try {
-    await clearChatHistory();
-    lastHistorySignature = '';
-    renderHistory([]);
-  } catch (error) {
-    appendMessage('assistant', error.message || 'Failed to clear chat history.');
-  } finally {
-    clearChatBtn.disabled = false;
-    clearChatBtn.textContent = 'Clear chat';
-  }
-});
+    if (recognition) {
+      recognition.lang = currentVoiceLang;
+    }
+  });
+}
 
 quickButtons.forEach((btn) => {
-  btn.addEventListener('click', () => {
-    chatText.value = btn.dataset.prompt || '';
-    chatText.focus();
+  btn.addEventListener("click", () => {
+    const prompt = btn.dataset.prompt || btn.textContent || "";
+    handleQuickPrompt(prompt);
   });
 });
 
-(async () => {
-  initSpeechRecognition();
-  const currentUser = await getCurrentUser();
-  try {
-    await syncHistory(true);
-    startHistoryPolling();
-  } catch (error) {
-    renderHistory([]);
-  }
-  if (!currentUser) {
-    userBadge.textContent = 'Guest mode';
+(async function initChatPage() {
+  applyTheme(getPreferredTheme());
+  setupVoiceRecognition();
+  loadQuestionFromUrl();
+
+  const user = await getCurrentUser();
+  if (!user) {
+    window.location.href = "index.html";
     return;
   }
-  userBadge.textContent = `Signed in as ${currentUser.email}`;
+
+  if (userBadge) {
+    userBadge.textContent = `Signed in as ${user.fullName || user.email} (${user.role || "user"})`;
+  }
+
+  await loadHistory();
 })();

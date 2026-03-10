@@ -33,6 +33,45 @@
     <section class="form-panel">
       <div id="formCarousel" class="form-carousel">
         <article class="form-card sign-in is-active" data-form="signin">
+          <section id="mfaCard" class="mfa-card hidden">
+
+            <p class="eyebrow">Two-Factor Authentication</p>
+          
+            <h2 class="mfa-title">Enter verification code</h2>
+          
+            <p id="mfaDescription" class="mfa-description">
+              We sent a 6-digit code to your email.
+            </p>
+          
+            <form id="mfaForm">
+          
+              <div class="mfa-input">
+                <input
+                  id="mfaCode"
+                  type="text"
+                  maxlength="6"
+                  inputmode="numeric"
+                  placeholder="------"
+                  autocomplete="one-time-code"
+                  required
+                />
+              </div>
+          
+              <div class="mfa-actions">
+                <button id="verifyMfaBtn" class="primary-btn" type="submit">
+                  Verify
+                </button>
+          
+                <button id="cancelMfaBtn" class="secondary-btn" type="button">
+                  Back
+                </button>
+              </div>
+          
+              <p id="mfaMessage" class="form-message"></p>
+          
+            </form>
+          
+          </section>
           <h2>Sign In</h2>
           <p class="form-copy">Continue to your dashboard.</p>
           <form id="signInForm" novalidate>
@@ -56,6 +95,37 @@
         </article>
 
         <article class="form-card sign-up" data-form="signup">
+          <section class="auth-card mfa-card hidden" id="mfaCard" aria-hidden="true">
+            <div class="auth-card-content">
+              <p class="eyebrow">Two-Factor Authentication</p>
+              <h2>Enter verification code</h2>
+              <p class="auth-copy" id="mfaHelpText">
+                We sent a 6-digit code to your email.
+              </p>
+          
+              <form id="mfaForm" class="auth-form">
+                <label>
+                  Verification code
+                  <input
+                    id="mfaCode"
+                    type="text"
+                    inputmode="numeric"
+                    maxlength="6"
+                    placeholder="Enter 6-digit code"
+                    autocomplete="one-time-code"
+                    required
+                  />
+                </label>
+          
+                <div class="auth-actions">
+                  <button id="verifyMfaBtn" type="submit">Verify</button>
+                  <button id="cancelMfaBtn" type="button" class="secondary-btn">Back</button>
+                </div>
+          
+                <p id="mfaMessage" class="form-message" aria-live="polite"></p>
+              </form>
+            </div>
+          </section>
           <h2>Create Account</h2>
           <p class="form-copy">Start your workspace in under a minute.</p>
           <form id="signUpForm" novalidate>

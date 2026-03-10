@@ -7,12 +7,13 @@ import hmac
 import secrets
 import json
 import smtplib
+import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
 from email.message import EmailMessage
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.middleware.sessions import SessionMiddleware
@@ -21,6 +22,7 @@ from starlette.responses import Response
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "app.db"
+
 SESSION_SECRET = os.getenv(
     "SESSION_SECRET", "replace-this-in-production-with-long-random-secret"
 )
@@ -28,17 +30,19 @@ ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@vss.local").strip().lower()
 ADMIN_INVITE_CODE = os.getenv("ADMIN_INVITE_CODE", "ADMIN123").strip()
 ADMIN_INVITE_CODE_NORMALIZED = ADMIN_INVITE_CODE.upper()
 SESSION_HTTPS_ONLY = os.getenv("NODE_ENV", "development") == "production"
+
 SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com").strip()
 SMTP_PORT = int(os.getenv("SMTP_PORT", "465").strip())
 SMTP_USER = (os.getenv("SMTP_USER") or os.getenv("GMAIL_ADDRESS") or "").strip()
 SMTP_PASS = (os.getenv("SMTP_PASS") or os.getenv("GMAIL_APP_PASSWORD") or "").strip()
 SMTP_FROM = (os.getenv("SMTP_FROM") or SMTP_USER or "").strip()
+
 AUTH_MFA_ENABLED = os.getenv("AUTH_MFA_ENABLED", "true").strip().lower() != "false"
 AUTH_LOCKOUT_MAX_ATTEMPTS = max(int(os.getenv("AUTH_LOCKOUT_MAX_ATTEMPTS", "5")), 3)
 AUTH_LOCKOUT_MINUTES = max(int(os.getenv("AUTH_LOCKOUT_MINUTES", "15")), 5)
 AUTH_MFA_EMAIL_ACTIVE = AUTH_MFA_ENABLED and bool(SMTP_USER and SMTP_PASS and SMTP_FROM)
 
-app = FastAPI(title="Virtual Support System API (Python)")
+app = FastAPI(title="Virtual Support System API (Python - NLP Based)")
 
 app.add_middleware(
     SessionMiddleware,
@@ -123,6 +127,22 @@ class MaterialCreatePayload(BaseModel):
     description: str = ""
 
 
+class CreateTicketPayload(BaseModel):
+    subject: str
+    description: str
+    priority: str
+
+
+class NotificationSettingPayload(BaseModel):
+    enabled: bool
+
+
+class QuizCreatePayload(BaseModel):
+    title: str
+    description: str = ""
+    quizType: str = "quiz"
+
+
 def normalize_email(value: str) -> str:
     return value.strip().lower()
 
@@ -181,47 +201,17 @@ def verify_password(password: str, encoded: str) -> bool:
         return False
 
 
-def generate_nlp_reply(input_text: str, history: list | None = None) -> str:
-    text = str(input_text or "").strip()
-    lower = text.lower()
-    ticket_match = re.search(r"\b(?:ticket|case|ref)\s*#?\s*([a-z0-9-]{4,})\b", text, re.I)
-    history = history or []
-    last_user = None
-    for item in reversed(history):
-        if item.get("role") == "user":
-            last_user = item.get("content", "")
-            break
-
-    if not text:
-        return "Please type your question so I can help."
-    if re.search(r"\b(hi|hello|hey|good morning|good afternoon)\b", lower):
-        return "Hello. I am your AI support assistant. How can I help you today?"
-    if re.search(r"\b(password|reset|forgot)\b", lower):
-        return "For password concerns, please contact your administrator for account assistance."
-    if re.search(r"\b(hour|open|schedule|time)\b", lower):
-        return "Support is available Monday to Friday, 8:00 AM to 6:00 PM (local time)."
-    if re.search(r"\b(price|pricing|plan|subscription)\b", lower):
-        return "Pricing depends on your selected support package. I can connect you to sales for exact plan details."
-    if ticket_match:
-        return f"I found your reference {ticket_match.group(1)}. For status updates, please share your registered email or contact live support."
-    if re.search(r"\b(thank|thanks)\b", lower):
-        return "You are welcome. If you need anything else, I am here."
-    if re.search(r"^\s*(who are you|what can you do)\s*\??$", text, re.I):
-        return "I am your virtual assistant. I can handle general questions and also help with support workflows like tickets, attendance, and account concerns."
-    if re.search(r"^(explain|define|summarize|compare|how|why|what|when|where)\b", lower):
-        return "Good question. I can give a concise explanation. If you want, I can also provide step-by-step details or a simpler version."
-    if last_user and "more" in lower:
-        return f'Continuing from your last topic: "{last_user}". Tell me if you want a short answer, detailed answer, or examples.'
-    return "I can help with open questions too. Share your topic clearly, and I will answer directly with practical steps when needed."
+def sha256_hex(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def trim_chat_history(history: list, max_items: int = 12) -> list:
+def trim_chat_history(history: list, max_items: int = 20) -> list:
     if not isinstance(history, list):
         return []
     out = []
     for item in history[-max_items:]:
         role = "assistant" if item.get("role") == "assistant" else "user"
-        content = str(item.get("content", ""))[:1000]
+        content = str(item.get("content", ""))[:3000]
         out.append({"role": role, "content": content})
     return out
 
@@ -229,8 +219,64 @@ def trim_chat_history(history: list, max_items: int = 12) -> list:
 def get_welcome_message() -> dict:
     return {
         "role": "assistant",
-        "content": "Hello. I can handle open-ended conversations. Ask anything, and I will keep context across messages.",
+        "content": "Hello. I am your NLP-based virtual support assistant. Ask anything and I will respond based on detected keywords and intent.",
     }
+
+
+def get_last_audit_hash(conn: sqlite3.Connection) -> str:
+    row = conn.execute("SELECT entry_hash FROM audit_chain ORDER BY id DESC LIMIT 1").fetchone()
+    return row["entry_hash"] if row else "GENESIS"
+
+
+def append_audit_event(conn: sqlite3.Connection, event_type: str, user_email: str | None, payload: dict):
+    prev_hash = get_last_audit_hash(conn)
+    created_at = datetime.utcnow().isoformat()
+    payload_json = json.dumps(payload or {}, separators=(",", ":"), sort_keys=True)
+    entry_hash = sha256_hex(
+        f"{prev_hash}|{event_type}|{user_email or ''}|{payload_json}|{created_at}"
+    )
+    conn.execute(
+        """
+        INSERT INTO audit_chain (event_type, user_email, payload_json, prev_hash, entry_hash, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (event_type, user_email, payload_json, prev_hash, entry_hash, created_at),
+    )
+    return entry_hash
+
+
+def verify_audit_rows(rows) -> bool:
+    prev = "GENESIS"
+    for row in rows:
+        expected = sha256_hex(
+            f"{prev}|{row['event_type']}|{row['user_email'] or ''}|{row['payload_json']}|{row['created_at']}"
+        )
+        if row["prev_hash"] != prev or row["entry_hash"] != expected:
+            return False
+        prev = row["entry_hash"]
+    return True
+
+
+def get_notification_setting(conn: sqlite3.Connection, user_email: str) -> bool:
+    row = conn.execute(
+        "SELECT notifications_enabled FROM user_settings WHERE user_email = ?",
+        (user_email,),
+    ).fetchone()
+    return bool(row and row["notifications_enabled"] == 1)
+
+
+def set_notification_setting(conn: sqlite3.Connection, user_email: str, enabled: bool) -> None:
+    conn.execute(
+        """
+        INSERT INTO user_settings (user_email, notifications_enabled, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(user_email) DO UPDATE SET
+          notifications_enabled = excluded.notifications_enabled,
+          updated_at = excluded.updated_at
+        """,
+        (user_email, 1 if enabled else 0, datetime.utcnow().isoformat()),
+    )
+    conn.commit()
 
 
 def can_use_attendance(request: Request) -> bool:
@@ -250,184 +296,285 @@ def is_professor_session(request: Request) -> bool:
     return str(request.session.get("role", "")).strip().lower() == "professor"
 
 
-def init_db() -> None:
-    with get_conn() as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              full_name TEXT NOT NULL,
-              email TEXT NOT NULL UNIQUE,
-              role TEXT NOT NULL DEFAULT 'student',
-              email_verified INTEGER NOT NULL DEFAULT 0,
-              password_hash TEXT NOT NULL,
-              created_at TEXT NOT NULL
-            )
-            """
-        )
-        cols = conn.execute("PRAGMA table_info(users)").fetchall()
-        if not any(col["name"] == "role" for col in cols):
-            conn.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'student'")
-        if not any(col["name"] == "email_verified" for col in cols):
-            conn.execute("ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS audit_chain (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              event_type TEXT NOT NULL,
-              user_email TEXT,
-              payload_json TEXT NOT NULL,
-              prev_hash TEXT NOT NULL,
-              entry_hash TEXT NOT NULL,
-              created_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS attendance_records (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              user_email TEXT NOT NULL,
-              attendance_date TEXT NOT NULL,
-              status TEXT NOT NULL CHECK(status IN ('present','late','absent')),
-              created_at TEXT NOT NULL,
-              UNIQUE(user_email, attendance_date)
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS user_settings (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              user_email TEXT NOT NULL UNIQUE,
-              notifications_enabled INTEGER NOT NULL DEFAULT 0,
-              updated_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS support_tickets (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              public_id TEXT NOT NULL UNIQUE,
-              user_email TEXT NOT NULL,
-              subject TEXT NOT NULL,
-              description TEXT NOT NULL,
-              priority TEXT NOT NULL CHECK(priority IN ('low','medium','high')),
-              status TEXT NOT NULL CHECK(status IN ('open','in_progress','resolved')) DEFAULT 'open',
-              created_at TEXT NOT NULL,
-              updated_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS material_activities (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              title TEXT NOT NULL,
-              description TEXT NOT NULL,
-              created_by_email TEXT NOT NULL,
-              created_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS quizzes (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              title TEXT NOT NULL,
-              description TEXT NOT NULL,
-              quiz_type TEXT NOT NULL DEFAULT 'quiz',
-              created_by_email TEXT NOT NULL,
-              created_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS password_reset_tokens (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              user_email TEXT NOT NULL,
-              token_hash TEXT NOT NULL UNIQUE,
-              expires_at TEXT NOT NULL,
-              used INTEGER NOT NULL DEFAULT 0,
-              created_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS email_verification_codes (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              user_email TEXT NOT NULL,
-              code_hash TEXT NOT NULL,
-              expires_at TEXT NOT NULL,
-              used INTEGER NOT NULL DEFAULT 0,
-              created_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS login_attempts (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              user_email TEXT NOT NULL UNIQUE,
-              failed_attempts INTEGER NOT NULL DEFAULT 0,
-              locked_until TEXT,
-              updated_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS login_mfa_codes (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              user_email TEXT NOT NULL,
-              code_hash TEXT NOT NULL,
-              expires_at TEXT NOT NULL,
-              used INTEGER NOT NULL DEFAULT 0,
-              created_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.commit()
+def finalize_signed_in_session(request: Request, user) -> None:
+    request.session.clear()
+    request.session["user_id"] = user["id"]
+    request.session["email"] = user["email"]
+    request.session["role"] = user["role"] or "student"
 
 
-def sha256_hex(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-
-def get_last_audit_hash(conn: sqlite3.Connection) -> str:
-    row = conn.execute(
-        "SELECT entry_hash FROM audit_chain ORDER BY id DESC LIMIT 1"
+def get_login_attempt(conn: sqlite3.Connection, user_email: str):
+    return conn.execute(
+        "SELECT user_email, failed_attempts, locked_until, updated_at FROM login_attempts WHERE user_email = ?",
+        (user_email,),
     ).fetchone()
-    return row["entry_hash"] if row else "GENESIS"
 
 
-def append_audit_event(conn: sqlite3.Connection, event_type: str, user_email: str, payload: dict):
-    prev_hash = get_last_audit_hash(conn)
-    created_at = datetime.utcnow().isoformat()
-    payload_json = json.dumps(payload or {}, separators=(",", ":"), sort_keys=True)
-    entry_hash = sha256_hex(
-        f"{prev_hash}|{event_type}|{user_email or ''}|{payload_json}|{created_at}"
-    )
+def clear_login_attempt(conn: sqlite3.Connection, user_email: str) -> None:
+    conn.execute("DELETE FROM login_attempts WHERE user_email = ?", (user_email,))
+    conn.commit()
+
+
+def get_lockout_seconds(row) -> int:
+    if not row or not row["locked_until"]:
+        return 0
+    try:
+        locked_until = datetime.fromisoformat(str(row["locked_until"]).replace("Z", "+00:00"))
+    except Exception:
+        return 0
+    seconds = int((locked_until.replace(tzinfo=None) - datetime.utcnow()).total_seconds())
+    return max(seconds, 0)
+
+
+def record_failed_login(conn: sqlite3.Connection, user_email: str):
+    row = get_login_attempt(conn, user_email)
+    failed = int(row["failed_attempts"] or 0) + 1 if row else 1
+    locked_until = None
+    if failed >= AUTH_LOCKOUT_MAX_ATTEMPTS:
+        locked_until = (datetime.utcnow() + timedelta(minutes=AUTH_LOCKOUT_MINUTES)).isoformat()
     conn.execute(
-        "INSERT INTO audit_chain (event_type, user_email, payload_json, prev_hash, entry_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-        (event_type, user_email, payload_json, prev_hash, entry_hash, created_at),
+        """
+        INSERT INTO login_attempts (user_email, failed_attempts, locked_until, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(user_email) DO UPDATE SET
+          failed_attempts = excluded.failed_attempts,
+          locked_until = excluded.locked_until,
+          updated_at = excluded.updated_at
+        """,
+        (user_email, failed, locked_until, datetime.utcnow().isoformat()),
     )
-    return entry_hash
+    conn.commit()
+    return {"failed": failed, "lockedUntil": locked_until}
 
 
-def verify_audit_rows(rows) -> bool:
-    prev = "GENESIS"
-    for row in rows:
-        expected = sha256_hex(
-            f"{prev}|{row['event_type']}|{row['user_email'] or ''}|{row['payload_json']}|{row['created_at']}"
-        )
-        if row["prev_hash"] != prev or row["entry_hash"] != expected:
-            return False
-        prev = row["entry_hash"]
+def create_login_mfa_code(conn: sqlite3.Connection, user_email: str) -> str:
+    raw_code = f"{secrets.randbelow(900000) + 100000}"
+    code_hash = sha256_hex(raw_code)
+    created_at = datetime.utcnow().isoformat()
+    expires_at = (datetime.utcnow() + timedelta(minutes=10)).isoformat()
+    conn.execute("UPDATE login_mfa_codes SET used = 1 WHERE user_email = ? AND used = 0", (user_email,))
+    conn.execute(
+        """
+        INSERT INTO login_mfa_codes (user_email, code_hash, expires_at, used, created_at)
+        VALUES (?, ?, ?, 0, ?)
+        """,
+        (user_email, code_hash, expires_at, created_at),
+    )
+    conn.commit()
+    return raw_code
+
+
+def get_valid_login_mfa_code(conn: sqlite3.Connection, user_email: str, raw_code: str):
+    code_hash = sha256_hex(str(raw_code or "").strip())
+    now = datetime.utcnow().isoformat()
+    return conn.execute(
+        """
+        SELECT id, user_email, expires_at, used
+        FROM login_mfa_codes
+        WHERE user_email = ? AND code_hash = ? AND used = 0 AND expires_at > ?
+        LIMIT 1
+        """,
+        (user_email, code_hash, now),
+    ).fetchone()
+
+
+def mark_login_mfa_used(conn: sqlite3.Connection, code_id: int) -> None:
+    conn.execute("UPDATE login_mfa_codes SET used = 1 WHERE id = ?", (code_id,))
+    conn.commit()
+
+
+def send_login_mfa_email(to_email: str, code: str) -> bool:
+    if not SMTP_USER or not SMTP_PASS or not SMTP_FROM:
+        return False
+    msg = EmailMessage()
+    msg["Subject"] = "Virtual Support Login Verification Code"
+    msg["From"] = SMTP_FROM
+    msg["To"] = to_email
+    msg.set_content(f"Your login verification code is: {code}. It expires in 10 minutes.")
+    msg.add_alternative(
+        f"<p>Your login verification code is: <strong>{code}</strong></p><p>It expires in 10 minutes.</p>",
+        subtype="html",
+    )
+    with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as smtp:
+        smtp.login(SMTP_USER, SMTP_PASS)
+        smtp.send_message(msg)
     return True
+
+
+def send_signin_alert_email(to_email: str) -> bool:
+    if not SMTP_USER or not SMTP_PASS or not SMTP_FROM:
+        return False
+    when = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    msg = EmailMessage()
+    msg["Subject"] = "Virtual Support Sign-in Alert"
+    msg["From"] = SMTP_FROM
+    msg["To"] = to_email
+    msg.set_content(
+        f"Your account signed in at {when}. If this was not you, reset your password immediately."
+    )
+    msg.add_alternative(
+        f"<p>Your account signed in at <strong>{when}</strong>.</p><p>If this was not you, reset your password immediately.</p>",
+        subtype="html",
+    )
+    with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as smtp:
+        smtp.login(SMTP_USER, SMTP_PASS)
+        smtp.send_message(msg)
+    return True
+
+
+def make_ticket_id() -> str:
+    return f"TKT-{secrets.token_hex(3).upper()}"
+
+
+def categorize_ticket_priority(subject: str, description: str) -> str:
+    text = f"{subject or ''} {description or ''}".lower()
+    high_hints = [
+        "urgent", "emergency", "cannot login", "can not login",
+        "system down", "payment failed", "security", "breach", "critical",
+    ]
+    medium_hints = ["error", "failed", "issue", "problem", "delay", "not working", "unable"]
+    if any(k in text for k in high_hints):
+        return "high"
+    if any(k in text for k in medium_hints):
+        return "medium"
+    return "low"
+
+
+def create_ticket(conn: sqlite3.Connection, user_email: str, subject: str, description: str, priority: str) -> str:
+    public_id = make_ticket_id()
+    now = datetime.utcnow().isoformat()
+    conn.execute(
+        """
+        INSERT INTO support_tickets (public_id, user_email, subject, description, priority, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, 'open', ?, ?)
+        """,
+        (public_id, user_email, subject, description, priority, now, now),
+    )
+    conn.commit()
+    return public_id
+
+
+def list_tickets_by_email(conn: sqlite3.Connection, user_email: str):
+    return conn.execute(
+        """
+        SELECT public_id, subject, description, priority, status, created_at, updated_at
+        FROM support_tickets
+        WHERE user_email = ?
+        ORDER BY id DESC
+        """,
+        (user_email,),
+    ).fetchall()
+
+
+def list_all_users(conn: sqlite3.Connection):
+    return conn.execute(
+        """
+        SELECT id, full_name, email, role, created_at
+        FROM users
+        ORDER BY id DESC
+        """
+    ).fetchall()
+
+
+def update_user_role_by_id(conn: sqlite3.Connection, user_id: int, role: str) -> bool:
+    cur = conn.execute("UPDATE users SET role = ? WHERE id = ?", (role, user_id))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def list_all_tickets(conn: sqlite3.Connection):
+    return conn.execute(
+        """
+        SELECT public_id, user_email, subject, description, priority, status, created_at, updated_at
+        FROM support_tickets
+        ORDER BY id DESC
+        """
+    ).fetchall()
+
+
+def get_ticket_by_public_id(conn: sqlite3.Connection, public_id: str):
+    return conn.execute(
+        """
+        SELECT id, public_id, user_email, subject, description, priority, status, created_at, updated_at
+        FROM support_tickets
+        WHERE public_id = ?
+        """,
+        (public_id,),
+    ).fetchone()
+
+
+def update_ticket_status(conn: sqlite3.Connection, public_id: str, status: str) -> bool:
+    now = datetime.utcnow().isoformat()
+    cur = conn.execute(
+        "UPDATE support_tickets SET status = ?, updated_at = ? WHERE public_id = ?",
+        (status, now, public_id),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def list_material_activities(conn: sqlite3.Connection):
+    return conn.execute(
+        """
+        SELECT id, title, description, created_by_email, created_at
+        FROM material_activities
+        ORDER BY id DESC
+        """
+    ).fetchall()
+
+
+def create_material_activity(conn: sqlite3.Connection, title: str, description: str, created_by_email: str) -> dict:
+    now = datetime.utcnow().isoformat()
+    cur = conn.execute(
+        """
+        INSERT INTO material_activities (title, description, created_by_email, created_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (sanitize_text(title, 255), sanitize_text(description or "", 2000), created_by_email, now),
+    )
+    conn.commit()
+    return {"id": cur.lastrowid, "createdAt": now}
+
+
+def delete_material_activity(conn: sqlite3.Connection, activity_id: int, created_by_email: str) -> bool:
+    cur = conn.execute(
+        "DELETE FROM material_activities WHERE id = ? AND created_by_email = ?",
+        (activity_id, created_by_email),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def list_quizzes(conn: sqlite3.Connection):
+    return conn.execute(
+        """
+        SELECT id, title, description, quiz_type, created_by_email, created_at
+        FROM quizzes
+        ORDER BY id DESC
+        """
+    ).fetchall()
+
+
+def create_quiz(conn: sqlite3.Connection, title: str, description: str, quiz_type: str, created_by_email: str) -> dict:
+    now = datetime.utcnow().isoformat()
+    cur = conn.execute(
+        """
+        INSERT INTO quizzes (title, description, quiz_type, created_by_email, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (sanitize_text(title, 255), sanitize_text(description or "", 2000), quiz_type or "quiz", created_by_email, now),
+    )
+    conn.commit()
+    return {"id": cur.lastrowid, "createdAt": now}
+
+
+def delete_quiz(conn: sqlite3.Connection, quiz_id: int, created_by_email: str) -> bool:
+    cur = conn.execute(
+        "DELETE FROM quizzes WHERE id = ? AND created_by_email = ?",
+        (quiz_id, created_by_email),
+    )
+    conn.commit()
+    return cur.rowcount > 0
 
 
 def get_attendance_summary(conn: sqlite3.Connection, attendance_date: str) -> dict:
@@ -456,9 +603,7 @@ def get_attendance_summary(conn: sqlite3.Connection, attendance_date: str) -> di
     }
 
 
-def upsert_attendance(
-    conn: sqlite3.Connection, user_email: str, attendance_date: str, status: str
-) -> None:
+def upsert_attendance(conn: sqlite3.Connection, user_email: str, attendance_date: str, status: str) -> None:
     conn.execute(
         """
         INSERT INTO attendance_records (user_email, attendance_date, status, created_at)
@@ -507,13 +652,13 @@ def build_notifications(
         return f"{prefix}-{base}-{seq}"
 
     actionable = [
-        t
-        for t in (tickets or [])
+        t for t in (tickets or [])
         if str(t["status"]).lower() not in {"resolved", "closed"}
     ]
     high_open = [t for t in actionable if str(t["priority"]).lower() == "high"]
     medium_open = [t for t in actionable if str(t["priority"]).lower() == "medium"]
     low_open = [t for t in actionable if str(t["priority"]).lower() == "low"]
+
     stale_open = []
     for t in actionable:
         try:
@@ -639,14 +784,17 @@ def build_notifications(
 
     role_lower = (role or "").strip().lower()
     activities_list = activities or []
+
     if role_lower == "student" and activities_list:
         count = len(activities_list)
-        latest = activities_list[0] if activities_list else {}
+        latest = activities_list[0]
         latest_title = (latest.get("title") or "New activity").strip() or "New activity"
+
         if count == 1:
             msg = f"New activity from your professor: {latest_title}"
         else:
             msg = f"You have {count} activities from your professor. Latest: {latest_title}"
+
         notifications.append(
             {
                 "id": make_id("activities"),
@@ -655,21 +803,39 @@ def build_notifications(
                 "message": msg,
                 "createdAt": now,
                 "actionPath": "material.html",
-                "actionLabel": "View Activities"
+                "actionLabel": "View Activities",
             }
         )
-        
-        # Quiz notifications
+
         quizzes_list = [a for a in activities_list if a.get("type") == "quiz"]
         if quizzes_list:
             q = quizzes_list[0]
-            notifications.append({"id": make_id("quizzes"), "level": "info", "title": "New Quizzes", "message": f"New quiz from your professor: {q.get('title', 'Quiz')}", "createdAt": now, "actionPath": "material.html", "actionLabel": "View Quizzes"})
-        
-        # Exam notifications
+            notifications.append(
+                {
+                    "id": make_id("quizzes"),
+                    "level": "info",
+                    "title": "New Quizzes",
+                    "message": f"New quiz from your professor: {q.get('title', 'Quiz')}",
+                    "createdAt": now,
+                    "actionPath": "material.html",
+                    "actionLabel": "View Quizzes",
+                }
+            )
+
         exams_list = [a for a in activities_list if a.get("type") == "exam"]
         if exams_list:
             e = exams_list[0]
-            notifications.append({"id": make_id("exams"), "level": "info", "title": "New Exams", "message": f"New exam from your professor: {e.get('title', 'Exam')}", "createdAt": now, "actionPath": "material.html", "actionLabel": "View Exams"})
+            notifications.append(
+                {
+                    "id": make_id("exams"),
+                    "level": "info",
+                    "title": "New Exams",
+                    "message": f"New exam from your professor: {e.get('title', 'Exam')}",
+                    "createdAt": now,
+                    "actionPath": "material.html",
+                    "actionLabel": "View Exams",
+                }
+            )
 
     unread = len([n for n in notifications if n.get("level") != "success"])
     return {
@@ -680,451 +846,607 @@ def build_notifications(
     }
 
 
-def get_notification_setting(conn: sqlite3.Connection, user_email: str) -> bool:
-    row = conn.execute(
-        "SELECT notifications_enabled FROM user_settings WHERE user_email = ?",
-        (user_email,),
-    ).fetchone()
-    return bool(row and row["notifications_enabled"] == 1)
+def tokenize_text(text: str) -> list[str]:
+    return re.findall(r"[a-zA-Z0-9']+", str(text or "").lower())
 
 
-def set_notification_setting(conn: sqlite3.Connection, user_email: str, enabled: bool) -> None:
-    conn.execute(
-        """
-        INSERT INTO user_settings (user_email, notifications_enabled, updated_at)
-        VALUES (?, ?, ?)
-        ON CONFLICT(user_email) DO UPDATE SET
-          notifications_enabled = excluded.notifications_enabled,
-          updated_at = excluded.updated_at
-        """,
-        (user_email, 1 if enabled else 0, datetime.utcnow().isoformat()),
-    )
-    conn.commit()
+def extract_last_user_topic(history: list | None = None) -> str:
+    history = history or []
+    for item in reversed(history):
+        if item.get("role") == "user":
+            topic = extract_topic_from_text(item.get("content", ""))
+            if topic:
+                return topic
+    return ""
 
 
-def update_user_password_by_email(
-    conn: sqlite3.Connection, user_email: str, password_hash: str
-) -> bool:
-    cur = conn.execute(
-        "UPDATE users SET password_hash = ? WHERE email = ?",
-        (password_hash, user_email),
-    )
-    conn.commit()
-    return cur.rowcount > 0
+def extract_topic_from_text(text: str) -> str:
+    text = str(text or "").strip()
+    lower = text.lower()
 
-
-def create_password_reset_code(conn: sqlite3.Connection, user_email: str) -> str:
-    raw_code = f"{secrets.randbelow(900000) + 100000}"
-    token_hash = sha256_hex(raw_code)
-    created_at = datetime.utcnow().isoformat()
-    expires_at = datetime.utcfromtimestamp(datetime.utcnow().timestamp() + 600).isoformat()
-    conn.execute(
-        "UPDATE password_reset_tokens SET used = 1 WHERE user_email = ? AND used = 0",
-        (user_email,),
-    )
-    conn.execute(
-        """
-        INSERT INTO password_reset_tokens (user_email, token_hash, expires_at, used, created_at)
-        VALUES (?, ?, ?, 0, ?)
-        """,
-        (user_email, token_hash, expires_at, created_at),
-    )
-    conn.commit()
-    return raw_code
-
-
-def get_valid_password_reset(conn: sqlite3.Connection, user_email: str, raw_code: str):
-    token_hash = sha256_hex(str(raw_code or "").strip())
-    now = datetime.utcnow().isoformat()
-    return conn.execute(
-        """
-        SELECT id, user_email, expires_at, used
-        FROM password_reset_tokens
-        WHERE user_email = ? AND token_hash = ? AND used = 0 AND expires_at > ?
-        LIMIT 1
-        """,
-        (user_email, token_hash, now),
-    ).fetchone()
-
-
-def mark_password_reset_used(conn: sqlite3.Connection, token_id: int) -> None:
-    conn.execute("UPDATE password_reset_tokens SET used = 1 WHERE id = ?", (token_id,))
-    conn.commit()
-
-
-def send_password_reset_email(to_email: str, code: str) -> bool:
-    if not SMTP_USER or not SMTP_PASS or not SMTP_FROM:
-        return False
-    msg = EmailMessage()
-    msg["Subject"] = "Virtual Support Password Reset Code"
-    msg["From"] = SMTP_FROM
-    msg["To"] = to_email
-    msg.set_content(f"Your password reset code is: {code}. It expires in 10 minutes.")
-    msg.add_alternative(
-        f"<p>Your password reset code is: <strong>{code}</strong></p><p>It expires in 10 minutes.</p>",
-        subtype="html",
-    )
-    with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as smtp:
-        smtp.login(SMTP_USER, SMTP_PASS)
-        smtp.send_message(msg)
-    return True
-
-
-def send_verification_code_email(to_email: str, code: str) -> bool:
-    if not SMTP_USER or not SMTP_PASS or not SMTP_FROM:
-        return False
-    msg = EmailMessage()
-    msg["Subject"] = "Virtual Support Email Verification Code"
-    msg["From"] = SMTP_FROM
-    msg["To"] = to_email
-    msg.set_content(f"Your verification code is: {code}. It expires in 10 minutes.")
-    msg.add_alternative(
-        f"<p>Your verification code is: <strong>{code}</strong></p><p>It expires in 10 minutes.</p>",
-        subtype="html",
-    )
-    with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as smtp:
-        smtp.login(SMTP_USER, SMTP_PASS)
-        smtp.send_message(msg)
-    return True
-
-
-def create_verification_code(conn: sqlite3.Connection, user_email: str) -> str:
-    raw_code = f"{secrets.randbelow(900000) + 100000}"
-    code_hash = sha256_hex(raw_code)
-    created_at = datetime.utcnow().isoformat()
-    expires_at = datetime.utcfromtimestamp(datetime.utcnow().timestamp() + 600).isoformat()
-    conn.execute(
-        "UPDATE email_verification_codes SET used = 1 WHERE user_email = ? AND used = 0",
-        (user_email,),
-    )
-    conn.execute(
-        """
-        INSERT INTO email_verification_codes (user_email, code_hash, expires_at, used, created_at)
-        VALUES (?, ?, ?, 0, ?)
-        """,
-        (user_email, code_hash, expires_at, created_at),
-    )
-    conn.commit()
-    return raw_code
-
-
-def get_valid_verification_code(conn: sqlite3.Connection, user_email: str, raw_code: str):
-    code_hash = sha256_hex(str(raw_code or "").strip())
-    now = datetime.utcnow().isoformat()
-    return conn.execute(
-        """
-        SELECT id, user_email, expires_at, used
-        FROM email_verification_codes
-        WHERE user_email = ? AND code_hash = ? AND used = 0 AND expires_at > ?
-        LIMIT 1
-        """,
-        (user_email, code_hash, now),
-    ).fetchone()
-
-
-def mark_verification_code_used(conn: sqlite3.Connection, code_id: int) -> None:
-    conn.execute("UPDATE email_verification_codes SET used = 1 WHERE id = ?", (code_id,))
-    conn.commit()
-
-
-def set_email_verified(conn: sqlite3.Connection, user_email: str) -> bool:
-    cur = conn.execute("UPDATE users SET email_verified = 1 WHERE email = ?", (user_email,))
-    conn.commit()
-    return cur.rowcount > 0
-
-
-def get_login_attempt(conn: sqlite3.Connection, user_email: str):
-    return conn.execute(
-        "SELECT user_email, failed_attempts, locked_until, updated_at FROM login_attempts WHERE user_email = ?",
-        (user_email,),
-    ).fetchone()
-
-
-def clear_login_attempt(conn: sqlite3.Connection, user_email: str) -> None:
-    conn.execute("DELETE FROM login_attempts WHERE user_email = ?", (user_email,))
-    conn.commit()
-
-
-def get_lockout_seconds(row) -> int:
-    if not row or not row["locked_until"]:
-        return 0
-    try:
-        locked_until = datetime.fromisoformat(str(row["locked_until"]).replace("Z", "+00:00"))
-    except Exception:
-        return 0
-    seconds = int((locked_until.replace(tzinfo=None) - datetime.utcnow()).total_seconds())
-    return max(seconds, 0)
-
-
-def record_failed_login(conn: sqlite3.Connection, user_email: str):
-    row = get_login_attempt(conn, user_email)
-    failed = int(row["failed_attempts"] or 0) + 1 if row else 1
-    locked_until = None
-    if failed >= AUTH_LOCKOUT_MAX_ATTEMPTS:
-        locked_until = (datetime.utcnow() + timedelta(minutes=AUTH_LOCKOUT_MINUTES)).isoformat()
-    conn.execute(
-        """
-        INSERT INTO login_attempts (user_email, failed_attempts, locked_until, updated_at)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(user_email) DO UPDATE SET
-          failed_attempts = excluded.failed_attempts,
-          locked_until = excluded.locked_until,
-          updated_at = excluded.updated_at
-        """,
-        (user_email, failed, locked_until, datetime.utcnow().isoformat()),
-    )
-    conn.commit()
-    return {"failed": failed, "lockedUntil": locked_until}
-
-
-def create_login_mfa_code(conn: sqlite3.Connection, user_email: str) -> str:
-    raw_code = f"{secrets.randbelow(900000) + 100000}"
-    code_hash = sha256_hex(raw_code)
-    created_at = datetime.utcnow().isoformat()
-    expires_at = (datetime.utcnow() + timedelta(minutes=10)).isoformat()
-    conn.execute("UPDATE login_mfa_codes SET used = 1 WHERE user_email = ? AND used = 0", (user_email,))
-    conn.execute(
-        """
-        INSERT INTO login_mfa_codes (user_email, code_hash, expires_at, used, created_at)
-        VALUES (?, ?, ?, 0, ?)
-        """,
-        (user_email, code_hash, expires_at, created_at),
-    )
-    conn.commit()
-    return raw_code
-
-
-def get_valid_login_mfa_code(conn: sqlite3.Connection, user_email: str, raw_code: str):
-    code_hash = sha256_hex(str(raw_code or "").strip())
-    now = datetime.utcnow().isoformat()
-    return conn.execute(
-        """
-        SELECT id, user_email, expires_at, used
-        FROM login_mfa_codes
-        WHERE user_email = ? AND code_hash = ? AND used = 0 AND expires_at > ?
-        LIMIT 1
-        """,
-        (user_email, code_hash, now),
-    ).fetchone()
-
-
-def mark_login_mfa_used(conn: sqlite3.Connection, code_id: int) -> None:
-    conn.execute("UPDATE login_mfa_codes SET used = 1 WHERE id = ?", (code_id,))
-    conn.commit()
-
-
-def send_login_mfa_email(to_email: str, code: str) -> bool:
-    if not SMTP_USER or not SMTP_PASS or not SMTP_FROM:
-        return False
-    msg = EmailMessage()
-    msg["Subject"] = "Virtual Support Login Verification Code"
-    msg["From"] = SMTP_FROM
-    msg["To"] = to_email
-    msg.set_content(f"Your login verification code is: {code}. It expires in 10 minutes.")
-    msg.add_alternative(
-        f"<p>Your login verification code is: <strong>{code}</strong></p><p>It expires in 10 minutes.</p>",
-        subtype="html",
-    )
-    with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as smtp:
-        smtp.login(SMTP_USER, SMTP_PASS)
-        smtp.send_message(msg)
-    return True
-
-
-def send_signin_alert_email(to_email: str) -> bool:
-    if not SMTP_USER or not SMTP_PASS or not SMTP_FROM:
-        return False
-    when = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
-    msg = EmailMessage()
-    msg["Subject"] = "Virtual Support Sign-in Alert"
-    msg["From"] = SMTP_FROM
-    msg["To"] = to_email
-    msg.set_content(
-        f"Your account signed in at {when}. If this was not you, reset your password immediately."
-    )
-    msg.add_alternative(
-        f"<p>Your account signed in at <strong>{when}</strong>.</p><p>If this was not you, reset your password immediately.</p>",
-        subtype="html",
-    )
-    with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as smtp:
-        smtp.login(SMTP_USER, SMTP_PASS)
-        smtp.send_message(msg)
-    return True
-
-
-def finalize_signed_in_session(request: Request, user) -> None:
-    request.session.clear()
-    request.session["user_id"] = user["id"]
-    request.session["email"] = user["email"]
-    request.session["role"] = user["role"] or "student"
-
-
-def make_ticket_id() -> str:
-    return f"TKT-{secrets.token_hex(3).upper()}"
-
-
-def categorize_ticket_priority(subject: str, description: str) -> str:
-    text = f"{subject or ''} {description or ''}".lower()
-    high_hints = [
-        "urgent",
-        "emergency",
-        "cannot login",
-        "can not login",
-        "system down",
-        "payment failed",
-        "security",
-        "breach",
-        "critical",
+    patterns = [
+        r"(?:what is|who is|define|explain|tell me about)\s+(.+)",
+        r"(?:how does|how do|how can|how to)\s+(.+)",
+        r"(?:difference between|compare)\s+(.+)",
+        r"(?:create|write|make|generate)\s+(.+)",
     ]
-    medium_hints = ["error", "failed", "issue", "problem", "delay", "not working", "unable"]
-    if any(k in text for k in high_hints):
-        return "high"
-    if any(k in text for k in medium_hints):
-        return "medium"
-    return "low"
+
+    for pattern in patterns:
+        match = re.search(pattern, lower)
+        if match:
+            topic = match.group(1).strip(" ?.!")
+            return topic[:120]
+
+    words = tokenize_text(text)
+    if not words:
+        return ""
+    return " ".join(words[:6])
 
 
-def create_ticket(
-    conn: sqlite3.Connection, user_email: str, subject: str, description: str, priority: str
-) -> str:
-    public_id = make_ticket_id()
-    now = datetime.utcnow().isoformat()
-    conn.execute(
-        """
-        INSERT INTO support_tickets (public_id, user_email, subject, description, priority, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, 'open', ?, ?)
-        """,
-        (public_id, user_email, subject, description, priority, now, now),
+def get_intent_scores(text: str) -> dict:
+    lower = str(text or "").lower()
+    tokens = set(tokenize_text(lower))
+
+    intent_map = {
+        "greeting": {
+            "phrases": ["hello", "hi", "hey", "good morning", "good afternoon", "good evening"],
+            "keywords": {"hello", "hi", "hey", "morning", "afternoon", "evening"},
+        },
+        "identity": {
+            "phrases": ["who are you", "what can you do", "what do you do"],
+            "keywords": {"who", "what", "can", "do", "assistant", "system"},
+        },
+        "attendance": {
+            "phrases": ["attendance", "mark attendance", "present", "late", "absent"],
+            "keywords": {"attendance", "present", "late", "absent"},
+        },
+        "tickets": {
+            "phrases": ["ticket", "support ticket", "issue", "concern", "complaint", "problem"],
+            "keywords": {"ticket", "support", "issue", "concern", "complaint", "problem"},
+        },
+        "materials": {
+            "phrases": ["material", "activity", "lesson", "quiz", "exam", "study guide"],
+            "keywords": {"material", "activity", "lesson", "quiz", "exam", "study", "guide"},
+        },
+        "account": {
+            "phrases": ["password", "forgot password", "reset password", "login problem", "cannot login"],
+            "keywords": {"password", "forgot", "reset", "login", "account"},
+        },
+        "writing": {
+            "phrases": ["rewrite", "improve grammar", "write", "essay", "email", "caption", "message"],
+            "keywords": {"rewrite", "grammar", "write", "essay", "email", "caption", "message"},
+        },
+        "programming": {
+            "phrases": ["python", "code", "programming", "debug", "function", "loop", "recursion"],
+            "keywords": {"python", "code", "programming", "debug", "function", "loop", "recursion", "bug"},
+        },
+        "thesis_nlp": {
+            "phrases": ["nlp", "natural language processing", "thesis", "methodology", "system"],
+            "keywords": {"nlp", "natural", "language", "processing", "thesis", "methodology", "system"},
+        },
+        "how_to": {
+            "phrases": ["how to", "how do i", "how can i", "steps to"],
+            "keywords": {"how", "steps"},
+        },
+        "definition": {
+            "phrases": ["what is", "define", "meaning of", "explain"],
+            "keywords": {"what", "define", "meaning", "explain"},
+        },
+        "comparison": {
+            "phrases": ["difference between", "compare", "vs", "versus"],
+            "keywords": {"difference", "compare", "vs", "versus"},
+        },
+        "thanks": {
+            "phrases": ["thanks", "thank you"],
+            "keywords": {"thanks", "thank", "appreciate"},
+        },
+        "follow_up": {
+            "phrases": ["more", "explain more", "continue", "tell me more", "give example", "simplify"],
+            "keywords": {"more", "continue", "example", "simplify"},
+        },
+    }
+
+    scores = {}
+    for intent, config in intent_map.items():
+        score = 0
+
+        for phrase in config["phrases"]:
+            if phrase in lower:
+                score += 3
+
+        for keyword in config["keywords"]:
+            if keyword in tokens:
+                score += 1
+
+        scores[intent] = score
+
+    return scores
+
+
+def detect_primary_intent(text: str) -> str:
+    scores = get_intent_scores(text)
+    best_intent = max(scores, key=scores.get)
+    if scores[best_intent] <= 0:
+        return "general"
+    return best_intent
+
+
+def format_steps(topic: str) -> str:
+    return (
+        f"Here is a simple step-by-step explanation for {topic}:\n\n"
+        f"1. Understand the basic idea of {topic}.\n"
+        f"2. Identify the main parts or process involved.\n"
+        f"3. Apply it using a simple example.\n"
+        f"4. Review the result and refine your understanding.\n\n"
+        f"If you want, ask me to make it simpler, more detailed, or give an example about {topic}."
     )
-    conn.commit()
-    return public_id
 
 
-def list_tickets_by_email(conn: sqlite3.Connection, user_email: str):
-    return conn.execute(
-        """
-        SELECT public_id, subject, description, priority, status, created_at, updated_at
-        FROM support_tickets
-        WHERE user_email = ?
-        ORDER BY id DESC
-        """,
-        (user_email,),
-    ).fetchall()
-
-
-def list_all_users(conn: sqlite3.Connection):
-    return conn.execute(
-        """
-        SELECT id, full_name, email, role, created_at
-        FROM users
-        ORDER BY id DESC
-        """
-    ).fetchall()
-
-
-def update_user_role_by_id(conn: sqlite3.Connection, user_id: int, role: str) -> bool:
-    cur = conn.execute("UPDATE users SET role = ? WHERE id = ?", (role, user_id))
-    conn.commit()
-    return cur.rowcount > 0
-
-
-def list_all_tickets(conn: sqlite3.Connection):
-    return conn.execute(
-        """
-        SELECT public_id, user_email, subject, description, priority, status, created_at, updated_at
-        FROM support_tickets
-        ORDER BY id DESC
-        """
-    ).fetchall()
-
-
-def get_ticket_by_public_id(conn: sqlite3.Connection, public_id: str):
-    return conn.execute(
-        """
-        SELECT id, public_id, user_email, subject, description, priority, status, created_at, updated_at
-        FROM support_tickets
-        WHERE public_id = ?
-        """,
-        (public_id,),
-    ).fetchone()
-
-
-def update_ticket_status(conn: sqlite3.Connection, public_id: str, status: str) -> bool:
-    now = datetime.utcnow().isoformat()
-    cur = conn.execute(
-        "UPDATE support_tickets SET status = ?, updated_at = ? WHERE public_id = ?",
-        (status, now, public_id),
+def format_definition(topic: str) -> str:
+    return (
+        f"{topic.capitalize()} is a concept or topic that can be understood by looking at its purpose, main parts, and how it is used in practice.\n\n"
+        f"If you want, I can explain {topic} in a simpler way, give an example, or make it step by step."
     )
-    conn.commit()
-    return cur.rowcount > 0
 
 
-def list_material_activities(conn: sqlite3.Connection):
-    return conn.execute(
-        """
-        SELECT id, title, description, created_by_email, created_at
-        FROM material_activities
-        ORDER BY id DESC
-        """
-    ).fetchall()
+def format_comparison(topic: str) -> str:
+    parts = re.split(r"\bvs\b|\bversus\b|\bdifference between\b|\bcompare\b", topic, flags=re.I)
+    cleaned = [p.strip(" ,.?") for p in parts if p.strip(" ,.?")]
+    if len(cleaned) >= 2:
+        a = cleaned[0]
+        b = cleaned[1]
+        return (
+            f"Here is a simple comparison between {a} and {b}:\n\n"
+            f"- {a}: usually focuses on its own role, features, or purpose.\n"
+            f"- {b}: differs in function, structure, or use depending on the context.\n\n"
+            f"If you want, send the exact two terms again and I will compare them more specifically."
+        )
+    return "Please send the two things you want me to compare, and I will explain their differences clearly."
 
 
-def create_material_activity(
-    conn: sqlite3.Connection, title: str, description: str, created_by_email: str
-) -> dict:
-    now = datetime.utcnow().isoformat()
-    cur = conn.execute(
-        """
-        INSERT INTO material_activities (title, description, created_by_email, created_at)
-        VALUES (?, ?, ?, ?)
-        """,
-        (sanitize_text(title, 255), sanitize_text(description or "", 2000), created_by_email, now),
+def programming_reply(text: str) -> str:
+    lower = text.lower()
+
+    if "recursion" in lower:
+        return (
+            "Recursion is a programming technique where a function calls itself to solve a problem in smaller parts.\n\n"
+            "Python example:\n"
+            "def factorial(n):\n"
+            "    if n == 0:\n"
+            "        return 1\n"
+            "    return n * factorial(n - 1)\n\n"
+            "In this example, the function keeps calling itself until it reaches the base case, which is n == 0."
+        )
+
+    if "loop" in lower:
+        return (
+            "A loop is used to repeat a block of code.\n\n"
+            "Python example:\n"
+            "for i in range(3):\n"
+            "    print(i)\n\n"
+            "This prints numbers from 0 to 2."
+        )
+
+    if "function" in lower:
+        return (
+            "A function is a reusable block of code that performs a specific task.\n\n"
+            "Python example:\n"
+            "def greet(name):\n"
+            "    return f'Hello, {name}'\n\n"
+            "Functions help organize and reuse code."
+        )
+
+    if "debug" in lower or "bug" in lower or "error" in lower:
+        return (
+            "Debugging means finding and fixing problems in code.\n\n"
+            "A simple debugging process is:\n"
+            "1. Read the error message.\n"
+            "2. Find the line where the error happened.\n"
+            "3. Check variable names, syntax, and logic.\n"
+            "4. Test again after fixing."
+        )
+
+    return (
+        "I can help with programming topics like variables, conditions, loops, functions, recursion, debugging, and basic code examples."
     )
-    conn.commit()
-    return {"id": cur.lastrowid, "createdAt": now}
 
 
-def delete_material_activity(conn: sqlite3.Connection, activity_id: int, created_by_email: str) -> bool:
-    cur = conn.execute(
-        "DELETE FROM material_activities WHERE id = ? AND created_by_email = ?",
-        (activity_id, created_by_email),
+def materials_reply() -> str:
+    return (
+        "The system allows professors to create and manage learning materials, classroom activities, quizzes, and exams. "
+        "Students can view the posted academic content through their account."
     )
-    conn.commit()
-    return cur.rowcount > 0
 
 
-def list_quizzes(conn: sqlite3.Connection):
-    return conn.execute(
-        """
-        SELECT id, title, description, quiz_type, created_by_email, created_at
-        FROM quizzes
-        ORDER BY id DESC
-        """
-    ).fetchall()
-
-
-def create_quiz(
-    conn: sqlite3.Connection, title: str, description: str, quiz_type: str, created_by_email: str
-) -> dict:
-    now = datetime.utcnow().isoformat()
-    cur = conn.execute(
-        """
-        INSERT INTO quizzes (title, description, quiz_type, created_by_email, created_at)
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        (sanitize_text(title, 255), sanitize_text(description or "", 2000), quiz_type or 'quiz', created_by_email, now),
+def tickets_reply() -> str:
+    return (
+        "You can create a support ticket by providing a subject, description, and priority. "
+        "The system can also categorize concern priority using keyword-based logic."
     )
-    conn.commit()
-    return {"id": cur.lastrowid, "createdAt": now}
 
 
-def delete_quiz(conn: sqlite3.Connection, quiz_id: int, created_by_email: str) -> bool:
-    cur = conn.execute(
-        "DELETE FROM quizzes WHERE id = ? AND created_by_email = ?",
-        (quiz_id, created_by_email),
+def attendance_reply() -> str:
+    return (
+        "The attendance module allows authorized users such as professors or administrators to mark users as present, late, or absent and review attendance summaries."
     )
-    conn.commit()
-    return cur.rowcount > 0
+
+
+def account_reply() -> str:
+    return (
+        "For password or account concerns, please use the system recovery options if available or contact the administrator for assistance."
+    )
+
+
+def writing_reply() -> str:
+    return (
+        "I can help rewrite text, improve grammar, simplify writing, shorten sentences, make messages more formal, or make them sound more natural."
+    )
+
+
+def thesis_nlp_reply() -> str:
+    return (
+        "This system uses Natural Language Processing or NLP through keyword matching, intent detection, context-aware follow-up handling, and predefined response generation to interpret user input and provide relevant replies."
+    )
+
+
+def build_general_response(text: str, history: list | None = None) -> str:
+    lower = str(text or "").lower()
+    topic = extract_topic_from_text(text)
+    last_topic = extract_last_user_topic(history)
+
+    if re.search(r"\bwhat is\b|\bdefine\b|\bmeaning\b|\bexplain\b", lower):
+        return format_definition(topic or last_topic or "this topic")
+
+    if re.search(r"\bhow to\b|\bhow do i\b|\bhow can i\b|\bsteps\b", lower):
+        return format_steps(topic or last_topic or "this process")
+
+    if re.search(r"\bcompare\b|\bdifference between\b|\bvs\b|\bversus\b", lower):
+        return format_comparison(topic or text)
+
+    if re.search(r"\bwhy\b", lower):
+        return (
+            f"The reason usually depends on the context of {topic or 'the topic you asked about'}. "
+            f"In general, the best way to explain it is to look at its purpose, cause, and effect. "
+            f"Send the exact topic again and I will explain it more specifically."
+        )
+
+    if re.search(r"\bexample\b", lower):
+        return (
+            f"Sure. I can give an example about {topic or last_topic or 'that topic'}. "
+            f"Please send the exact subject again so I can make the example more accurate."
+        )
+
+    return (
+        "I understand your question. I can answer many common topics using NLP-based intent detection and response logic, "
+        "but I work best when your message is specific. Try asking for an explanation, steps, comparison, example, or help about the system features."
+    )
+
+
+def generate_nlp_reply(input_text: str, history: list | None = None, role: str = "guest") -> str:
+    text = str(input_text or "").strip()
+    lower = text.lower()
+    history = history or []
+    role = str(role or "guest").strip().lower()
+
+    last_user = None
+    for item in reversed(history):
+        if item.get("role") == "user":
+            last_user = item.get("content", "")
+            break
+
+    role_label = {
+        "student": "student",
+        "professor": "professor",
+        "administrator": "administrator",
+        "admin": "administrator",
+    }.get(role, "user")
+
+    if not text:
+        return "Please type your question so I can help."
+
+    if re.search(r"\b(hi|hello|hey|good morning|good afternoon|good evening)\b", lower):
+        return f"Hello. I am your NLP-based virtual support assistant for {role_label}s. How can I help you today?"
+
+    if re.search(r"\b(who are you|what can you do)\b", lower):
+        base = (
+            "I am an NLP-based virtual support assistant. "
+            "I can answer common questions, explain concepts, and help users navigate the system."
+        )
+
+        if role == "student":
+            return base + " As a student, you can ask me about materials, quizzes, exams, attendance, writing help, and programming topics."
+        if role == "professor":
+            return base + " As a professor, you can ask me about materials, quizzes, exams, attendance, classroom tasks, writing help, and programming topics."
+        if role in ("administrator", "admin"):
+            return base + " As an administrator, you can ask me about users, roles, ticket management, audit logs, attendance access, and system-related concerns."
+        return base
+
+    if re.search(r"\b(nlp|natural language processing|thesis|methodology|system)\b", lower):
+        return (
+            "This chatbot uses Natural Language Processing or NLP through keyword matching, intent detection, "
+            "context-aware follow-up handling, and predefined response generation to interpret user input and provide relevant replies."
+        )
+
+    if re.search(r"\b(attendance|present|late|absent)\b", lower):
+        if role in ("professor", "administrator", "admin"):
+            return "You can use the attendance module to mark users as present, late, or absent and review attendance summaries by date."
+        return "As a student, attendance information is managed by authorized users such as professors or administrators."
+
+    if re.search(r"\b(ticket|support|issue|problem|concern|complaint)\b", lower):
+        if role in ("administrator", "admin"):
+            return "You can review all support tickets, update ticket status, and manage ticket resolution through the admin panel."
+        return (
+            "You can create a support ticket by entering a subject, description, and priority. "
+            "The system can also categorize some concerns automatically based on keywords."
+        )
+
+    if re.search(r"\b(material|activity|lesson|quiz|exam|study guide)\b", lower):
+        if role == "professor":
+            return "As a professor, you can create and manage learning materials, activities, quizzes, and exams for students."
+        if role == "student":
+            return "As a student, you can view materials, activities, quizzes, and exams posted by your professor."
+        if role in ("administrator", "admin"):
+            return "The system supports academic content such as materials, activities, quizzes, and exams, mainly for professor and student use."
+        return "The system supports materials, activities, quizzes, and exams for academic use."
+
+    if re.search(r"\b(user|users|role|roles|admin|administrator)\b", lower):
+        if role in ("administrator", "admin"):
+            return "As an administrator, you can manage users, review account roles, update user roles, and monitor system records."
+        return "User and role management is restricted to administrators."
+
+    if re.search(r"\b(audit|blockchain|hash|integrity|logs)\b", lower):
+        if role in ("administrator", "admin"):
+            return "You can review audit logs and verify the integrity of recorded system events through the audit and blockchain-related modules."
+        return "You can view your own audit-related records, while full audit access is restricted to administrators."
+
+    if re.search(r"\b(password|reset password|forgot password|account problem|login problem|cannot login|can't login)\b", lower):
+        return "For password or login concerns, please use the available recovery options in the system or contact the administrator for assistance."
+
+    if re.search(r"\b(write|rewrite|grammar|essay|message|email|caption)\b", lower):
+        return "I can help rewrite text, improve grammar, simplify writing, shorten sentences, or make your message clearer and more natural."
+
+    if re.search(r"\b(python|programming|code|coding|function|loop|recursion|debug)\b", lower):
+        if "recursion" in lower:
+            return (
+                "Recursion is a programming technique where a function calls itself to solve a problem in smaller parts.\n\n"
+                "Example in Python:\n"
+                "def factorial(n):\n"
+                "    if n == 0:\n"
+                "        return 1\n"
+                "    return n * factorial(n - 1)\n\n"
+                "In this example, the function keeps calling itself until it reaches the base case, which is n == 0."
+            )
+        if "loop" in lower:
+            return (
+                "A loop repeats a block of code.\n\n"
+                "Example in Python:\n"
+                "for i in range(3):\n"
+                "    print(i)\n\n"
+                "This prints 0, 1, and 2."
+            )
+        return "I can help explain programming concepts such as variables, conditions, loops, functions, recursion, debugging, and basic Python examples."
+
+    if re.search(r"\b(thank|thanks)\b", lower):
+        return "You are welcome. Let me know if you need more help."
+
+    if last_user and re.search(r"\b(more|continue|explain more|elaborate|simplify|example)\b", lower):
+        return f'You are asking for more details about: "{last_user}". Please send the exact topic again and I will continue the explanation.'
+
+    if re.search(r"\b(what is|define|meaning of|explain)\b", lower):
+        return "I can explain that, but I work best when the topic is specific. Please send the exact concept, feature, or process you want me to explain."
+
+    if re.search(r"\b(how to|how do i|how can i|steps)\b", lower):
+        return "I can give step-by-step guidance. Please send the exact task you want to do in the system."
+
+    if re.search(r"\b(compare|difference between|vs|versus)\b", lower):
+        return "I can compare the two items clearly. Please send the exact two terms or features you want me to compare."
+
+    return (
+        f"I understand your message as a {role_label}. "
+        "Please ask a more specific question about attendance, tickets, materials, quizzes, exams, account concerns, writing help, programming, audit logs, or system features."
+    )
+
+
+def get_suggested_replies(message: str, reply: str) -> list[str]:
+    text = str(message or "").lower()
+    reply_lower = str(reply or "").lower()
+
+    if re.search(r"\b(code|python|programming|function|loop|recursion|debug|error)\b", text):
+        return [
+            "Explain it simply",
+            "Give a code example",
+            "Show step by step",
+            "What is the output?",
+            "How do I fix errors?",
+        ]
+
+    if re.search(r"\b(quiz|exam|lesson|activity|study guide)\b", text):
+        return [
+            "Make it easier",
+            "Make it harder",
+            "Add answer key",
+            "Turn it into multiple choice",
+            "Make a lesson outline",
+        ]
+
+    if re.search(r"\b(write|rewrite|essay|message|email|grammar|caption)\b", text):
+        return [
+            "Make it more natural",
+            "Make it shorter",
+            "Make it formal",
+            "Fix grammar only",
+            "Make it persuasive",
+        ]
+
+    if re.search(r"\b(attendance|ticket|support|account|password)\b", text):
+        return [
+            "Explain the process",
+            "Show step by step",
+            "Who can access it?",
+            "What does the system do?",
+            "Summarize it",
+        ]
+
+    if re.search(r"\b(explain|what is|define|how|why|compare)\b", text) or "explain" in reply_lower:
+        return [
+            "Explain it simply",
+            "Give an example",
+            "Show step by step",
+            "Compare it",
+            "Summarize it",
+        ]
+
+    return [
+        "Explain more",
+        "Give an example",
+        "Make it simpler",
+        "Show step by step",
+        "Summarize it",
+    ]
+
+
+def init_db() -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              full_name TEXT NOT NULL,
+              email TEXT NOT NULL UNIQUE,
+              role TEXT NOT NULL DEFAULT 'student',
+              email_verified INTEGER NOT NULL DEFAULT 0,
+              password_hash TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            )
+            """
+        )
+        cols = conn.execute("PRAGMA table_info(users)").fetchall()
+        if not any(col["name"] == "role" for col in cols):
+            conn.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'student'")
+        if not any(col["name"] == "email_verified" for col in cols):
+            conn.execute("ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0")
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS audit_chain (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              event_type TEXT NOT NULL,
+              user_email TEXT,
+              payload_json TEXT NOT NULL,
+              prev_hash TEXT NOT NULL,
+              entry_hash TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS attendance_records (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              user_email TEXT NOT NULL,
+              attendance_date TEXT NOT NULL,
+              status TEXT NOT NULL CHECK(status IN ('present','late','absent')),
+              created_at TEXT NOT NULL,
+              UNIQUE(user_email, attendance_date)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_settings (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              user_email TEXT NOT NULL UNIQUE,
+              notifications_enabled INTEGER NOT NULL DEFAULT 0,
+              updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS support_tickets (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              public_id TEXT NOT NULL UNIQUE,
+              user_email TEXT NOT NULL,
+              subject TEXT NOT NULL,
+              description TEXT NOT NULL,
+              priority TEXT NOT NULL CHECK(priority IN ('low','medium','high')),
+              status TEXT NOT NULL CHECK(status IN ('open','in_progress','resolved')) DEFAULT 'open',
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS material_activities (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              title TEXT NOT NULL,
+              description TEXT NOT NULL,
+              created_by_email TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS quizzes (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              title TEXT NOT NULL,
+              description TEXT NOT NULL,
+              quiz_type TEXT NOT NULL DEFAULT 'quiz',
+              created_by_email TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS password_reset_tokens (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              user_email TEXT NOT NULL,
+              token_hash TEXT NOT NULL UNIQUE,
+              expires_at TEXT NOT NULL,
+              used INTEGER NOT NULL DEFAULT 0,
+              created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS email_verification_codes (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              user_email TEXT NOT NULL,
+              code_hash TEXT NOT NULL,
+              expires_at TEXT NOT NULL,
+              used INTEGER NOT NULL DEFAULT 0,
+              created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS login_attempts (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              user_email TEXT NOT NULL UNIQUE,
+              failed_attempts INTEGER NOT NULL DEFAULT 0,
+              locked_until TEXT,
+              updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS login_mfa_codes (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              user_email TEXT NOT NULL,
+              code_hash TEXT NOT NULL,
+              expires_at TEXT NOT NULL,
+              used INTEGER NOT NULL DEFAULT 0,
+              created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.commit()
 
 
 @app.on_event("startup")
@@ -1143,16 +1465,13 @@ def signup(payload: SignUpPayload, request: Request):
     allowed_roles = {"student", "professor", "administrator"}
 
     if not is_valid_name(full_name):
-        raise HTTPException(
-            status_code=400,
-            detail="Full name must be 2-80 letters and valid symbols only.",
-        )
+        raise HTTPException(status_code=400, detail="Full name must be 2-80 letters and valid symbols only.")
     if role not in allowed_roles:
         raise HTTPException(status_code=400, detail="Invalid role value.")
     if role == "administrator" and normalized_admin_code != ADMIN_INVITE_CODE_NORMALIZED:
         raise HTTPException(
             status_code=403,
-            detail="Invalid admin access code. For local demo, default is ADMIN123 unless changed in .env.",
+            detail="Invalid admin access code. For local demo, default is ADMIN123 unless changed in environment variables.",
         )
     if not is_valid_email(email):
         raise HTTPException(status_code=400, detail="Enter a valid email address.")
@@ -1163,16 +1482,16 @@ def signup(payload: SignUpPayload, request: Request):
         )
 
     with get_conn() as conn:
-        existing = conn.execute(
-            "SELECT id FROM users WHERE email = ?",
-            (email,),
-        ).fetchone()
+        existing = conn.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
         if existing:
             raise HTTPException(status_code=409, detail="This email is already registered.")
 
         password_hash = hash_password(password)
         cursor = conn.execute(
-            "INSERT INTO users (full_name, email, role, email_verified, password_hash, created_at) VALUES (?, ?, ?, 1, ?, ?)",
+            """
+            INSERT INTO users (full_name, email, role, email_verified, password_hash, created_at)
+            VALUES (?, ?, ?, 1, ?, ?)
+            """,
             (full_name, email, role, password_hash, datetime.utcnow().isoformat()),
         )
         conn.commit()
@@ -1186,9 +1505,7 @@ def signup(payload: SignUpPayload, request: Request):
         )
         conn.commit()
 
-    return {
-        "message": "Account created successfully.",
-    }
+    return {"message": "Account created successfully."}
 
 
 @app.post("/api/auth/signin")
@@ -1208,13 +1525,15 @@ def signin(payload: SignInPayload, request: Request):
                 detail=f"Account temporarily locked. Try again in {lockout_seconds} seconds.",
             )
         user = conn.execute(
-            "SELECT id, email, role, email_verified, password_hash FROM users WHERE email = ?", (email,)
+            "SELECT id, email, role, email_verified, password_hash FROM users WHERE email = ?",
+            (email,),
         ).fetchone()
 
     if not user:
         with get_conn() as conn:
             record_failed_login(conn, email)
         raise HTTPException(status_code=401, detail="Invalid email or password.")
+
     if not verify_password(password, user["password_hash"]):
         with get_conn() as conn:
             result = record_failed_login(conn, email)
@@ -1240,6 +1559,7 @@ def signin(payload: SignInPayload, request: Request):
     with get_conn() as conn:
         clear_login_attempt(conn, email)
         user_role = str(user["role"] or "student").strip().lower()
+
         if AUTH_MFA_EMAIL_ACTIVE and user_role != "professor":
             code = create_login_mfa_code(conn, email)
             email_sent = False
@@ -1247,6 +1567,7 @@ def signin(payload: SignInPayload, request: Request):
                 email_sent = send_login_mfa_email(email, code)
             except Exception:
                 email_sent = False
+
             request.session.clear()
             request.session["pending_auth"] = {
                 "user_id": user["id"],
@@ -1254,23 +1575,28 @@ def signin(payload: SignInPayload, request: Request):
                 "role": user["role"] or "student",
                 "created_at": datetime.utcnow().isoformat(),
             }
+
             append_audit_event(conn, "signin_mfa_challenge", user["email"], {"emailSent": email_sent})
             conn.commit()
+
             return {
                 "message": "Enter the 6-digit verification code to complete sign in.",
                 "mfaRequired": True,
                 "emailSent": email_sent,
                 "verificationCode": None if email_sent else code,
             }
+
         finalize_signed_in_session(request, user)
         signin_alert_sent = False
         try:
             signin_alert_sent = send_signin_alert_email(user["email"])
         except Exception:
             signin_alert_sent = False
+
         append_audit_event(conn, "signin", user["email"], {"userId": user["id"], "role": user["role"] or "student"})
         append_audit_event(conn, "signin_alert", user["email"], {"emailSent": signin_alert_sent})
         conn.commit()
+
     return {"message": "Sign in successful."}
 
 
@@ -1279,26 +1605,33 @@ def signin_verify_mfa(payload: SignInMfaPayload, request: Request):
     pending = request.session.get("pending_auth") or {}
     if not pending or not pending.get("email") or not pending.get("user_id"):
         raise HTTPException(status_code=400, detail="No pending sign-in. Please sign in again.")
+
     code = sanitize_text(payload.code, 16)
     if not re.match(r"^\d{6}$", code):
         raise HTTPException(status_code=400, detail="Verification code must be 6 digits.")
+
     with get_conn() as conn:
         valid = get_valid_login_mfa_code(conn, pending["email"], code)
         if not valid:
             raise HTTPException(status_code=401, detail="Invalid or expired verification code.")
+
         mark_login_mfa_used(conn, valid["id"])
         user = conn.execute(
             "SELECT id, email, role FROM users WHERE id = ?",
             (int(pending["user_id"]),),
         ).fetchone()
+
         if not user or user["email"] != pending["email"]:
             raise HTTPException(status_code=401, detail="User session invalid. Please sign in again.")
+
         finalize_signed_in_session(request, user)
+
         signin_alert_sent = False
         try:
             signin_alert_sent = send_signin_alert_email(user["email"])
         except Exception:
             signin_alert_sent = False
+
         append_audit_event(
             conn,
             "signin",
@@ -1307,6 +1640,7 @@ def signin_verify_mfa(payload: SignInMfaPayload, request: Request):
         )
         append_audit_event(conn, "signin_alert", user["email"], {"emailSent": signin_alert_sent})
         conn.commit()
+
     return {"message": "Sign in successful."}
 
 
@@ -1338,7 +1672,8 @@ def me(request: Request):
 
     with get_conn() as conn:
         user = conn.execute(
-            "SELECT id, full_name, email, role, email_verified FROM users WHERE id = ?", (user_id,)
+            "SELECT id, full_name, email, role, email_verified FROM users WHERE id = ?",
+            (user_id,),
         ).fetchone()
 
     if not user:
@@ -1430,6 +1765,7 @@ def admin_users(request: Request):
 
     with get_conn() as conn:
         rows = list_all_users(conn)
+
     return {
         "users": [
             {
@@ -1462,10 +1798,11 @@ def admin_update_user_role(user_id: int, payload: UserRolePayload, request: Requ
         append_audit_event(
             conn,
             "admin_user_role_updated",
-            email or None,
+            email,
             {"userId": user_id, "role": next_role},
         )
         conn.commit()
+
     return {"message": "User role updated."}
 
 
@@ -1478,6 +1815,7 @@ def admin_tickets(request: Request):
 
     with get_conn() as conn:
         rows = list_all_tickets(conn)
+
     return {
         "tickets": [
             {
@@ -1513,10 +1851,11 @@ def admin_update_ticket_status(ticket_id: str, payload: TicketStatusPayload, req
         append_audit_event(
             conn,
             "admin_ticket_status_updated",
-            email or None,
+            email,
             {"ticketId": ticket_id, "status": next_status},
         )
         conn.commit()
+
     return {"message": "Ticket status updated."}
 
 
@@ -1528,23 +1867,22 @@ def admin_delete_ticket(ticket_id: str, request: Request):
         raise HTTPException(status_code=403, detail="Admin access required.")
 
     with get_conn() as conn:
-        # Check if ticket exists
         ticket = conn.execute(
             "SELECT id, subject, user_email FROM support_tickets WHERE public_id = ?",
-            (ticket_id,)
+            (ticket_id,),
         ).fetchone()
         if not ticket:
             raise HTTPException(status_code=404, detail="Ticket not found.")
-        
-        # Delete the ticket
+
         conn.execute("DELETE FROM support_tickets WHERE public_id = ?", (ticket_id,))
         append_audit_event(
             conn,
             "admin_ticket_deleted",
-            email or None,
-            {"ticketId": ticket_id, "subject": ticket[1], "userEmail": ticket[2]},
+            email,
+            {"ticketId": ticket_id, "subject": ticket["subject"], "userEmail": ticket["user_email"]},
         )
         conn.commit()
+
     return {"message": "Ticket removed."}
 
 
@@ -1553,10 +1891,7 @@ def attendance_summary(request: Request, date: str | None = None):
     if not request.session.get("user_id"):
         raise HTTPException(status_code=401, detail="Unauthorized")
     if not can_use_attendance(request):
-        raise HTTPException(
-            status_code=403,
-            detail="Attendance is restricted to professors and administrators.",
-        )
+        raise HTTPException(status_code=403, detail="Attendance is restricted to professors and administrators.")
 
     attendance_date = date or datetime.utcnow().date().isoformat()
     with get_conn() as conn:
@@ -1570,10 +1905,7 @@ def attendance_mark(payload: AttendanceMarkPayload, request: Request):
     if not user_id or not email:
         raise HTTPException(status_code=401, detail="Unauthorized")
     if not can_use_attendance(request):
-        raise HTTPException(
-            status_code=403,
-            detail="Only professors and administrators can mark attendance.",
-        )
+        raise HTTPException(status_code=403, detail="Only professors and administrators can mark attendance.")
 
     status = payload.status.strip().lower()
     attendance_date = (payload.date or datetime.utcnow().date().isoformat()).strip()
@@ -1584,13 +1916,9 @@ def attendance_mark(payload: AttendanceMarkPayload, request: Request):
 
     with get_conn() as conn:
         upsert_attendance(conn, email, attendance_date, status)
-        append_audit_event(
-            conn,
-            "attendance_marked",
-            email,
-            {"date": attendance_date, "status": status},
-        )
+        append_audit_event(conn, "attendance_marked", email, {"date": attendance_date, "status": status})
         conn.commit()
+
     return {"message": "Attendance saved.", "date": attendance_date, "status": status}
 
 
@@ -1600,10 +1928,7 @@ def attendance_today(request: Request, date: str | None = None):
     if not user_id:
         raise HTTPException(status_code=401, detail="Unauthorized")
     if not can_use_attendance(request):
-        raise HTTPException(
-            status_code=403,
-            detail="Attendance is restricted to professors and administrators.",
-        )
+        raise HTTPException(status_code=403, detail="Attendance is restricted to professors and administrators.")
 
     attendance_date = (date or datetime.utcnow().date().isoformat()).strip()
     if not re.match(r"^\d{4}-\d{2}-\d{2}$", attendance_date):
@@ -1634,12 +1959,11 @@ def material_list(request: Request):
         raise HTTPException(status_code=401, detail="Unauthorized")
     role = str(request.session.get("role", "")).strip().lower()
     if role not in ("professor", "student"):
-        raise HTTPException(
-            status_code=403,
-            detail="Material and activities are for professors and students only.",
-        )
+        raise HTTPException(status_code=403, detail="Material and activities are for professors and students only.")
+
     with get_conn() as conn:
         rows = list_material_activities(conn)
+
     return {
         "activities": [
             {
@@ -1659,17 +1983,14 @@ def material_create(payload: MaterialCreatePayload, request: Request):
     if not request.session.get("user_id") or not request.session.get("email"):
         raise HTTPException(status_code=401, detail="Unauthorized")
     if not is_professor_session(request):
-        raise HTTPException(
-            status_code=403,
-            detail="Material and activities are for professors only.",
-        )
+        raise HTTPException(status_code=403, detail="Material and activities are for professors only.")
+
     title = (payload.title or "").strip()
     if not title:
         raise HTTPException(status_code=400, detail="Title is required.")
+
     with get_conn() as conn:
-        result = create_material_activity(
-            conn, title, payload.description or "", request.session["email"]
-        )
+        result = create_material_activity(conn, title, payload.description or "", request.session["email"])
         append_audit_event(
             conn,
             "material_activity_created",
@@ -1677,6 +1998,7 @@ def material_create(payload: MaterialCreatePayload, request: Request):
             {"id": result["id"], "title": title},
         )
         conn.commit()
+
     return {
         "message": "Activity created.",
         "id": result["id"],
@@ -1689,21 +2011,17 @@ def material_delete(activity_id: int, request: Request):
     if not request.session.get("user_id") or not request.session.get("email"):
         raise HTTPException(status_code=401, detail="Unauthorized")
     if not is_professor_session(request):
-        raise HTTPException(
-            status_code=403,
-            detail="Material and activities are for professors only.",
-        )
-    if not isinstance(activity_id, int) or activity_id <= 0:
+        raise HTTPException(status_code=403, detail="Material and activities are for professors only.")
+    if activity_id <= 0:
         raise HTTPException(status_code=400, detail="Invalid activity id.")
+
     with get_conn() as conn:
         deleted = delete_material_activity(conn, activity_id, request.session["email"])
         if not deleted:
-            raise HTTPException(
-                status_code=404,
-                detail="Activity not found or you can only delete your own.",
-            )
+            raise HTTPException(status_code=404, detail="Activity not found or you can only delete your own.")
         append_audit_event(conn, "material_activity_deleted", request.session["email"], {"id": activity_id})
         conn.commit()
+
     return {"message": "Activity deleted."}
 
 
@@ -1711,14 +2029,14 @@ def material_delete(activity_id: int, request: Request):
 def quiz_list(request: Request):
     if not request.session.get("user_id") or not request.session.get("email"):
         raise HTTPException(status_code=401, detail="Unauthorized")
+
     role = (request.session.get("role") or "student").lower()
-    if role != "professor" and role != "student":
-        raise HTTPException(
-            status_code=403,
-            detail="Quizzes and exams are for professors and students only.",
-        )
+    if role not in ("professor", "student"):
+        raise HTTPException(status_code=403, detail="Quizzes and exams are for professors and students only.")
+
     with get_conn() as conn:
         rows = list_quizzes(conn)
+
     return {
         "quizzes": [
             {
@@ -1735,28 +2053,30 @@ def quiz_list(request: Request):
 
 
 @app.post("/api/quiz")
-def quiz_create(request: Request, payload: dict):
+def quiz_create(payload: QuizCreatePayload, request: Request):
     if not request.session.get("user_id") or not request.session.get("email"):
         raise HTTPException(status_code=401, detail="Unauthorized")
     if not is_professor_session(request):
-        raise HTTPException(
-            status_code=403,
-            detail="Quizzes and exams are for professors only.",
-        )
-    title = (payload.get("title") or "").strip()
+        raise HTTPException(status_code=403, detail="Quizzes and exams are for professors only.")
+
+    title = (payload.title or "").strip()
     if not title:
         raise HTTPException(status_code=400, detail="Title is required.")
-    description = payload.get("description", "")
-    quiz_type = payload.get("quizType", "quiz")
+
+    quiz_type = (payload.quizType or "quiz").strip().lower()
+    if quiz_type not in ("quiz", "exam"):
+        raise HTTPException(status_code=400, detail="quizType must be quiz or exam.")
+
     with get_conn() as conn:
-        result = create_quiz(
-            conn, title, description, quiz_type, request.session["email"]
-        )
+        result = create_quiz(conn, title, payload.description or "", quiz_type, request.session["email"])
         append_audit_event(
-            conn, "quiz_created", request.session["email"],
-            {"id": result["id"], "title": title, "quizType": quiz_type}
+            conn,
+            "quiz_created",
+            request.session["email"],
+            {"id": result["id"], "title": title, "quizType": quiz_type},
         )
         conn.commit()
+
     return {
         "message": "Quiz/Exam created.",
         "id": result["id"],
@@ -1769,21 +2089,17 @@ def quiz_delete(quiz_id: int, request: Request):
     if not request.session.get("user_id") or not request.session.get("email"):
         raise HTTPException(status_code=401, detail="Unauthorized")
     if not is_professor_session(request):
-        raise HTTPException(
-            status_code=403,
-            detail="Quizzes and exams are for professors only.",
-        )
-    if not isinstance(quiz_id, int) or quiz_id <= 0:
+        raise HTTPException(status_code=403, detail="Quizzes and exams are for professors only.")
+    if quiz_id <= 0:
         raise HTTPException(status_code=400, detail="Invalid quiz id.")
+
     with get_conn() as conn:
         deleted = delete_quiz(conn, quiz_id, request.session["email"])
         if not deleted:
-            raise HTTPException(
-                status_code=404,
-                detail="Quiz not found or you can only delete your own.",
-            )
+            raise HTTPException(status_code=404, detail="Quiz not found or you can only delete your own.")
         append_audit_event(conn, "quiz_deleted", request.session["email"], {"id": quiz_id})
         conn.commit()
+
     return {"message": "Quiz deleted."}
 
 
@@ -1805,14 +2121,14 @@ def notifications(request: Request):
                 "unreadCount": 0,
                 "notifications": [],
             }
-        user_row = conn.execute(
-            "SELECT role FROM users WHERE id = ?", (user_id,)
-        ).fetchone()
+
+        user_row = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
         role = (user_row["role"] or "student") if user_row else "student"
         attendance = get_attendance_summary(conn, today)
         tickets = list_tickets_by_email(conn, email)
         activities = list_material_activities(conn) if role == "student" else []
         quizzes = list_quizzes(conn) if role == "student" else []
+
         activities_for_notif = [
             {"title": r["title"], "createdAt": r["created_at"], "type": "activity"}
             for r in activities
@@ -1822,12 +2138,17 @@ def notifications(request: Request):
             for r in quizzes
         ]
         all_materials = activities_for_notif + quizzes_for_notif
+
         rows = conn.execute(
             "SELECT id, event_type, user_email, payload_json, prev_hash, entry_hash, created_at FROM audit_chain ORDER BY id ASC"
         ).fetchall()
+
     chain_valid = verify_audit_rows(rows)
     payload = build_notifications(
-        email, attendance, chain_valid, tickets,
+        email,
+        attendance,
+        chain_valid,
+        tickets,
         role=role,
         activities=all_materials,
     )
@@ -1841,19 +2162,10 @@ def get_notifications_setting(request: Request):
     user_id = request.session.get("user_id")
     if not user_id or not email:
         raise HTTPException(status_code=401, detail="Unauthorized")
+
     with get_conn() as conn:
         enabled = get_notification_setting(conn, email)
     return {"enabled": enabled}
-
-
-class NotificationSettingPayload(BaseModel):
-    enabled: bool
-
-
-class CreateTicketPayload(BaseModel):
-    subject: str
-    description: str
-    priority: str
 
 
 @app.post("/api/settings/notifications")
@@ -1862,6 +2174,7 @@ def set_notifications_setting(payload: NotificationSettingPayload, request: Requ
     user_id = request.session.get("user_id")
     if not user_id or not email:
         raise HTTPException(status_code=401, detail="Unauthorized")
+
     with get_conn() as conn:
         set_notification_setting(conn, email, payload.enabled)
     return {"enabled": payload.enabled}
@@ -1878,9 +2191,8 @@ def create_ticket_api(payload: CreateTicketPayload, request: Request):
     description = sanitize_text(payload.description, 2000)
     requested_priority = (payload.priority or "").strip().lower()
     inferred_priority = categorize_ticket_priority(subject, description)
-    priority = (
-        requested_priority if requested_priority in ("low", "medium", "high") else inferred_priority
-    )
+    priority = requested_priority if requested_priority in ("low", "medium", "high") else inferred_priority
+
     if len(subject) < 4:
         raise HTTPException(status_code=400, detail="Subject must be at least 4 characters.")
     if len(description) < 10:
@@ -1890,21 +2202,14 @@ def create_ticket_api(payload: CreateTicketPayload, request: Request):
 
     with get_conn() as conn:
         ticket_id = create_ticket(conn, email, subject, description, priority)
-        append_audit_event(
-            conn,
-            "ticket_created",
-            email,
-            {"ticketId": ticket_id, "priority": priority},
-        )
+        append_audit_event(conn, "ticket_created", email, {"ticketId": ticket_id, "priority": priority})
         conn.commit()
 
     return {
         "message": "Ticket created successfully.",
         "ticketId": ticket_id,
         "priority": priority,
-        "categorizedBy": "manual"
-        if requested_priority in ("low", "medium", "high")
-        else "system",
+        "categorizedBy": "manual" if requested_priority in ("low", "medium", "high") else "system",
     }
 
 
@@ -1914,8 +2219,10 @@ def my_tickets(request: Request):
     user_id = request.session.get("user_id")
     if not user_id or not email:
         raise HTTPException(status_code=401, detail="Unauthorized")
+
     with get_conn() as conn:
         rows = list_tickets_by_email(conn, email)
+
     return {
         "tickets": [
             {
@@ -1938,6 +2245,7 @@ def update_ticket_status_api(ticket_id: str, payload: TicketStatusPayload, reque
     user_id = request.session.get("user_id")
     if not user_id or not email:
         raise HTTPException(status_code=401, detail="Unauthorized")
+
     next_status = payload.status.strip().lower()
     if next_status not in ("open", "in_progress", "resolved"):
         raise HTTPException(status_code=400, detail="Invalid status value.")
@@ -1946,6 +2254,7 @@ def update_ticket_status_api(ticket_id: str, payload: TicketStatusPayload, reque
         ticket = get_ticket_by_public_id(conn, ticket_id)
         if not ticket:
             raise HTTPException(status_code=404, detail="Ticket not found.")
+
         is_owner = ticket["user_email"] == email
         is_admin = email.strip().lower() == ADMIN_EMAIL
         if not is_owner and not is_admin:
@@ -1954,13 +2263,10 @@ def update_ticket_status_api(ticket_id: str, payload: TicketStatusPayload, reque
         changed = update_ticket_status(conn, ticket_id, next_status)
         if not changed:
             raise HTTPException(status_code=404, detail="Ticket not found.")
-        append_audit_event(
-            conn,
-            "ticket_status_updated",
-            email,
-            {"ticketId": ticket_id, "status": next_status},
-        )
+
+        append_audit_event(conn, "ticket_status_updated", email, {"ticketId": ticket_id, "status": next_status})
         conn.commit()
+
     return {"message": "Ticket status updated."}
 
 
@@ -1969,6 +2275,7 @@ def blockchain_ticker(request: Request, limit: int = 12):
     user_id = request.session.get("user_id")
     if not user_id:
         raise HTTPException(status_code=401, detail="Unauthorized")
+
     safe_limit = min(max(limit, 1), 50)
     with get_conn() as conn:
         rows = conn.execute(
@@ -1980,6 +2287,7 @@ def blockchain_ticker(request: Request, limit: int = 12):
             """,
             (safe_limit,),
         ).fetchall()
+
     return {
         "events": [
             {
@@ -1995,31 +2303,128 @@ def blockchain_ticker(request: Request, limit: int = 12):
 
 
 @app.post("/api/chat")
-def chat(payload: ChatPayload, request: Request):
+async def chat(payload: ChatPayload, request: Request):
     message = str(payload.message or "").strip()
     if not message:
         raise HTTPException(status_code=400, detail="Message is required.")
-    history = request.session.get("chat_history", [])
-    history = trim_chat_history(history)
-    reply = generate_nlp_reply(message, history)
+
+    print("CHAT ENDPOINT CALLED", flush=True)
+    print("User message:", message, flush=True)
+
+    history = trim_chat_history(request.session.get("chat_history", []), 20)
+    user_role = str(request.session.get("role", "guest")).strip().lower()
+
+    reply = generate_nlp_reply(message, history, user_role)
+    source = "nlp"
+
+    print("REPLY SOURCE:", source, flush=True)
+    print("USER ROLE:", user_role, flush=True)
+
     request.session["chat_history"] = trim_chat_history(
-        history + [{"role": "user", "content": message}, {"role": "assistant", "content": reply}]
+        history + [
+            {"role": "user", "content": message},
+            {"role": "assistant", "content": reply},
+        ],
+        20,
     )
-    return {"reply": reply, "history": request.session["chat_history"]}
+
+    return {
+        "reply": reply,
+        "history": request.session["chat_history"],
+        "source": source,
+        "role": user_role,
+        "suggestions": get_suggested_replies(message, reply),
+    }
+
+    return {
+        "reply": reply,
+        "history": request.session["chat_history"],
+        "source": source,
+        "suggestions": get_suggested_replies(message, reply),
+    }
+
+
+@app.post("/api/chat/stream")
+async def chat_stream(payload: ChatPayload, request: Request):
+    message = str(payload.message or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Message is required.")
+
+    print("CHAT STREAM ENDPOINT CALLED", flush=True)
+    print("User message:", message, flush=True)
+
+    history = trim_chat_history(request.session.get("chat_history", []), 20)
+    user_role = str(request.session.get("role", "guest")).strip().lower()
+
+    reply = generate_nlp_reply(message, history, user_role)
+    source = "nlp"
+
+    print("REPLY SOURCE:", source, flush=True)
+    print("USER ROLE:", user_role, flush=True)
+
+    request.session["chat_history"] = trim_chat_history(
+        history + [
+            {"role": "user", "content": message},
+            {"role": "assistant", "content": reply},
+        ],
+        20,
+    )
+
+    suggestions = get_suggested_replies(message, reply)
+
+    async def event_generator():
+        for ch in reply:
+            yield f"event: delta\ndata: {json.dumps({'text': ch})}\n\n"
+            await asyncio.sleep(0.006)
+        yield f"event: done\ndata: {json.dumps({'reply': reply, 'suggestions': suggestions, 'source': source, 'role': user_role})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @app.get("/api/chat/history")
 def chat_history(request: Request):
-    history = trim_chat_history(request.session.get("chat_history", []))
+    history = trim_chat_history(request.session.get("chat_history", []), 20)
+
     if len(history) == 0:
-        return {"history": [get_welcome_message()]}
-    return {"history": history}
+        return {
+            "history": [get_welcome_message()],
+            "suggestions": [
+                "What can you do?",
+                "Explain recursion simply",
+                "Help me write a quiz",
+            ],
+        }
+
+    last_assistant = ""
+    for item in reversed(history):
+        if item.get("role") == "assistant":
+            last_assistant = item.get("content", "")
+            break
+
+    return {
+        "history": history,
+        "suggestions": get_suggested_replies("", last_assistant),
+    }
 
 
 @app.delete("/api/chat/history")
 def clear_chat_history(request: Request):
     request.session["chat_history"] = []
-    return {"message": "Chat history cleared."}
+    return {
+        "message": "Chat history cleared.",
+        "suggestions": [
+            "What can you do?",
+            "Explain recursion simply",
+            "Create a quiz about Python",
+        ],
+    }
 
 
 @app.get("/")
@@ -2027,5 +2432,4 @@ def root():
     return FileResponse(BASE_DIR / "index.html")
 
 
-# Serve existing frontend files (index.html, dashboard.html, css, js, etc.)
 app.mount("/", StaticFiles(directory=BASE_DIR, html=True), name="static")
