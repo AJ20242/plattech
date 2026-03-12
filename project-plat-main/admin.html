@@ -57,7 +57,7 @@
       <article class="panel-card">
         <div class="panel-head">
           <h2>Manage Users</h2>
-          <p>Update user roles instantly.</p>
+          <p>Update roles or delete user accounts.</p>
         </div>
         <div class="table-wrap">
           <table>
@@ -102,23 +102,27 @@
 
     <section class="panel-card audit-card">
       <div class="panel-head">
-        <h2>Audit Integrity Snapshot</h2>
-        <p id="chainStatus">Verifying chain...</p>
+        <div>
+          <h2>Audit Integrity Snapshot</h2>
+          <p id="chainStatus">Verifying chain...</p>
+        </div>
+        <p class="audit-hint">Compressed view with internal scroll</p>
       </div>
-      <div class="table-wrap">
-        <table>
-        <thead>
-          <tr>
-            <th>ID</th>
-            <th>Event</th>
-            <th>User</th>
-            <th>Timestamp</th>
-            <th>Prev Hash</th>
-            <th>Entry Hash</th>
-          </tr>
-        </thead>
-        <tbody id="auditTableBody"></tbody>
-      </table>
+
+      <div class="table-wrap audit-scroll">
+        <table class="audit-table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Event</th>
+              <th>User</th>
+              <th>Timestamp</th>
+              <th>Prev Hash</th>
+              <th>Entry Hash</th>
+            </tr>
+          </thead>
+          <tbody id="auditTableBody"></tbody>
+        </table>
       </div>
     </section>
 
@@ -126,7 +130,6 @@
       <h2>Ask the AI</h2>
       <div id="aiQuestions" class="feature-questions"></div>
     </section>
-
   </main>
 
   <script src="admin.js"></script>
@@ -134,4 +137,3 @@
   <script src="ai-questions.js"></script>
 </body>
 </html>
-

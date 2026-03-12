@@ -31,11 +31,55 @@ const cancelMfaBtn = document.getElementById('cancelMfaBtn');
 const mfaMessage = document.getElementById('mfaMessage');
 const mfaDescription = document.getElementById('mfaDescription');
 
+let resendMfaBtn = document.getElementById('resendMfaBtn');
+
 let activeForm = 'signin';
 let pendingMfaEmail = '';
+let isSigningIn = false;
+let isSigningUp = false;
+let isVerifyingMfa = false;
+let isResendingMfa = false;
+let resendCooldown = 0;
+let resendInterval = null;
+
 const SWITCH_DURATION_MS = 440;
 let heightRafId = null;
 const THEME_KEY = 'vss-theme';
+
+function normalizeEmail(email) {
+  return String(email || '').trim().toLowerCase();
+}
+
+function updateTabState() {
+  if (!tabSignIn || !tabSignUp) return;
+  const signInActive = activeForm === 'signin';
+  tabSignIn.classList.toggle('is-active', signInActive);
+  tabSignUp.classList.toggle('is-active', !signInActive);
+  tabSignIn.setAttribute('aria-selected', signInActive ? 'true' : 'false');
+  tabSignUp.setAttribute('aria-selected', signInActive ? 'false' : 'true');
+}
+
+function syncCarouselHeight() {
+  if (!formCarousel || !signInCard || !signUpCard) return;
+
+  let targetHeight = 0;
+  if (mfaCard && !mfaCard.classList.contains('hidden')) {
+    targetHeight = Math.ceil(signInCard.scrollHeight);
+  } else {
+    const activeCard = activeForm === 'signin' ? signInCard : signUpCard;
+    targetHeight = Math.ceil(activeCard.scrollHeight);
+  }
+
+  formCarousel.style.height = `${Math.max(targetHeight, 560)}px`;
+}
+
+function scheduleHeightSync() {
+  if (heightRafId) cancelAnimationFrame(heightRafId);
+  heightRafId = requestAnimationFrame(() => {
+    heightRafId = null;
+    syncCarouselHeight();
+  });
+}
 
 function switchForm(target) {
   if (!signInCard || !signUpCard || target === activeForm) return;
@@ -46,17 +90,29 @@ function switchForm(target) {
   const outgoing = activeForm === 'signin' ? signInCard : signUpCard;
   const movingForward = activeForm === 'signin' && target === 'signup';
 
-  outgoing.classList.remove('is-active');
-  outgoing.classList.remove('slide-left', 'slide-right', 'pre-left');
+  outgoing.classList.remove('is-active', 'slide-left', 'slide-right', 'pre-left');
   outgoing.classList.add(movingForward ? 'slide-left' : 'slide-right');
+  outgoing.setAttribute('aria-hidden', 'true');
 
-  incoming.classList.remove('slide-left', 'slide-right', 'pre-left');
-  if (!movingForward) incoming.classList.add('pre-left');
+  incoming.classList.remove('is-active', 'slide-left', 'slide-right', 'pre-left');
+  if (!movingForward) {
+    incoming.classList.add('pre-left');
+  } else {
+    incoming.style.transform = 'translateX(72px) scale(0.975)';
+    incoming.style.opacity = '0';
+    incoming.style.filter = 'blur(8px)';
+  }
 
   requestAnimationFrame(() => {
-    incoming.classList.remove('pre-left');
-    incoming.classList.add('is-active');
-    scheduleHeightSync();
+    requestAnimationFrame(() => {
+      incoming.classList.remove('pre-left');
+      incoming.style.transform = '';
+      incoming.style.opacity = '';
+      incoming.style.filter = '';
+      incoming.classList.add('is-active');
+      incoming.setAttribute('aria-hidden', 'false');
+      scheduleHeightSync();
+    });
   });
 
   setTimeout(() => {
@@ -69,37 +125,161 @@ function switchForm(target) {
   scheduleHeightSync();
 }
 
-function updateTabState() {
-  if (!tabSignIn || !tabSignUp || !signInCard || !signUpCard) return;
-  const signInActive = activeForm === 'signin';
-  tabSignIn.classList.toggle('is-active', signInActive);
-  tabSignUp.classList.toggle('is-active', !signInActive);
-  tabSignIn.setAttribute('aria-selected', signInActive ? 'true' : 'false');
-  tabSignUp.setAttribute('aria-selected', signInActive ? 'false' : 'true');
-  signInCard.setAttribute('aria-hidden', signInActive ? 'false' : 'true');
-  signUpCard.setAttribute('aria-hidden', signInActive ? 'true' : 'false');
+function showMessage(el, text, type = '') {
+  if (!el) return;
+  el.textContent = text;
+  el.className = `form-message${type ? ` ${type}` : ''}`;
+  scheduleHeightSync();
 }
 
-function syncCarouselHeight() {
-  if (!formCarousel || !signInCard || !signUpCard) return;
-  let targetHeight = 0;
+function clearMessage(el) {
+  if (!el) return;
+  el.textContent = '';
+  el.className = 'form-message';
+  scheduleHeightSync();
+}
 
-  if (!mfaCard?.classList.contains('hidden')) {
-    targetHeight = Math.ceil(mfaCard.scrollHeight);
+function setMfaMessage(text, type = '') {
+  if (!mfaMessage) return;
+  mfaMessage.textContent = text;
+  mfaMessage.className = `form-message${type ? ` ${type}` : ''}`;
+  scheduleHeightSync();
+}
+
+function toggleInvalid(input, invalid) {
+  if (!input) return;
+  input.classList.toggle('is-invalid', invalid);
+}
+
+function setButtonLoading(button, loading, loadingText = 'Please wait...') {
+  if (!button) return;
+  if (!button.dataset.defaultLabel) {
+    button.dataset.defaultLabel = button.textContent;
+  }
+  button.disabled = loading;
+  button.textContent = loading ? loadingText : button.dataset.defaultLabel;
+}
+
+function ensureResendButton() {
+  if (resendMfaBtn || !mfaForm) return;
+
+  resendMfaBtn = document.createElement('button');
+  resendMfaBtn.type = 'button';
+  resendMfaBtn.id = 'resendMfaBtn';
+  resendMfaBtn.className = 'secondary-btn';
+  resendMfaBtn.textContent = 'Send code again';
+
+  const actions = mfaForm.querySelector('.mfa-actions');
+  if (actions) {
+    actions.appendChild(resendMfaBtn);
   } else {
-    const activeCard = activeForm === 'signin' ? signInCard : signUpCard;
-    targetHeight = Math.ceil(activeCard.scrollHeight);
+    mfaForm.appendChild(resendMfaBtn);
   }
 
-  formCarousel.style.height = `${targetHeight}px`;
+  resendMfaBtn.addEventListener('click', handleResendMfa);
+  scheduleHeightSync();
 }
 
-function scheduleHeightSync() {
-  if (heightRafId) cancelAnimationFrame(heightRafId);
-  heightRafId = requestAnimationFrame(() => {
-    heightRafId = null;
-    syncCarouselHeight();
-  });
+function updateResendButtonLabel() {
+  if (!resendMfaBtn) return;
+
+  if (isResendingMfa) {
+    resendMfaBtn.disabled = true;
+    resendMfaBtn.textContent = 'Sending...';
+    return;
+  }
+
+  if (resendCooldown > 0) {
+    resendMfaBtn.disabled = true;
+    resendMfaBtn.textContent = `Send again in ${resendCooldown}s`;
+    return;
+  }
+
+  resendMfaBtn.disabled = false;
+  resendMfaBtn.textContent = 'Send code again';
+}
+
+function startResendCooldown(seconds = 30) {
+  resendCooldown = seconds;
+  updateResendButtonLabel();
+
+  if (resendInterval) clearInterval(resendInterval);
+
+  resendInterval = setInterval(() => {
+    resendCooldown -= 1;
+    if (resendCooldown <= 0) {
+      resendCooldown = 0;
+      clearInterval(resendInterval);
+      resendInterval = null;
+    }
+    updateResendButtonLabel();
+  }, 1000);
+}
+
+function showMfaCard(email) {
+  pendingMfaEmail = email || '';
+  activeForm = 'signin';
+
+  if (signUpCard) {
+    signUpCard.classList.remove('is-active', 'slide-left', 'slide-right', 'pre-left');
+    signUpCard.setAttribute('aria-hidden', 'true');
+  }
+
+  if (signInCard) {
+    signInCard.classList.add('is-active');
+    signInCard.classList.remove('slide-left', 'slide-right', 'pre-left');
+    signInCard.setAttribute('aria-hidden', 'false');
+  }
+
+  if (mfaCard) {
+    mfaCard.classList.remove('hidden');
+    mfaCard.setAttribute('aria-hidden', 'false');
+  }
+
+  if (mfaDescription) {
+    mfaDescription.textContent = email
+      ? `We sent a 6-digit verification code to ${email}.`
+      : 'We sent a 6-digit verification code to your email.';
+  }
+
+  if (mfaCode) {
+    mfaCode.value = '';
+    setTimeout(() => mfaCode.focus(), 0);
+  }
+
+  ensureResendButton();
+  startResendCooldown(30);
+  updateTabState();
+  setMfaMessage('');
+  scheduleHeightSync();
+}
+
+function hideMfaCard() {
+  pendingMfaEmail = '';
+
+  if (mfaCard) {
+    mfaCard.classList.add('hidden');
+    mfaCard.setAttribute('aria-hidden', 'true');
+  }
+
+  if (signInCard) {
+    signInCard.classList.add('is-active');
+    signInCard.setAttribute('aria-hidden', activeForm === 'signin' ? 'false' : 'true');
+  }
+
+  if (signUpCard) {
+    signUpCard.setAttribute('aria-hidden', activeForm === 'signup' ? 'false' : 'true');
+  }
+
+  if (resendInterval) {
+    clearInterval(resendInterval);
+    resendInterval = null;
+  }
+
+  resendCooldown = 0;
+  updateResendButtonLabel();
+  setMfaMessage('');
+  scheduleHeightSync();
 }
 
 function getPreferredTheme() {
@@ -110,8 +290,7 @@ function getPreferredTheme() {
 
 function updateThemeLabel(theme) {
   if (!themeToggle) return;
-  const dark = theme === 'dark';
-  themeToggle.setAttribute('aria-label', dark ? 'Enable light mode' : 'Enable dark mode');
+  themeToggle.setAttribute('aria-label', theme === 'dark' ? 'Enable light mode' : 'Enable dark mode');
 }
 
 function applyTheme(theme) {
@@ -119,16 +298,10 @@ function applyTheme(theme) {
   updateThemeLabel(theme);
 }
 
-function normalizeEmail(email) {
-  return String(email || '').trim().toLowerCase();
-}
-
 async function apiRequest(path, payload) {
   const response = await fetch(path, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
+    headers: { 'Content-Type': 'application/json' },
     credentials: 'same-origin',
     body: JSON.stringify(payload)
   });
@@ -154,10 +327,6 @@ function scorePassword(password) {
   return score;
 }
 
-function isStrongPassword(password) {
-  return scorePassword(password) === 5;
-}
-
 function updateStrengthLabel(password) {
   if (!passwordStrength) return;
 
@@ -165,14 +334,16 @@ function updateStrengthLabel(password) {
   let label = 'Strength: -';
   let className = 'password-strength neutral';
 
-  if (password.length > 0 && score <= 2) {
-    label = 'Strength: Weak';
+  if (!password) {
+    label = 'Strength: -';
+  } else if (score <= 2) {
+    label = 'Weak password';
     className = 'password-strength weak';
-  } else if (score === 3 || score === 4) {
-    label = 'Strength: Medium';
+  } else if (score <= 4) {
+    label = 'Moderate password';
     className = 'password-strength medium';
-  } else if (score === 5) {
-    label = 'Strength: Strong';
+  } else {
+    label = 'Strong password';
     className = 'password-strength strong';
   }
 
@@ -181,112 +352,39 @@ function updateStrengthLabel(password) {
   scheduleHeightSync();
 }
 
-function showMessage(el, text, type = '') {
-  if (!el) return;
-  el.textContent = text;
-  el.className = `form-message${type ? ` ${type}` : ''}`;
-  scheduleHeightSync();
-}
+async function handleResendMfa() {
+  if (isResendingMfa || resendCooldown > 0) return;
 
-function clearMessage(el) {
-  if (!el) return;
-  el.textContent = '';
-  el.className = 'form-message';
-  scheduleHeightSync();
-}
-
-function toggleInvalid(input, invalid) {
-  if (!input) return;
-  input.classList.toggle('is-invalid', invalid);
-}
-
-function setLoadingState(form, loading) {
-  if (!form) return;
-  const submitBtn = form.querySelector('button[type="submit"]');
-  if (!submitBtn) return;
-
-  if (!submitBtn.dataset.defaultLabel) {
-    submitBtn.dataset.defaultLabel = submitBtn.textContent;
-  }
-
-  submitBtn.disabled = loading;
-  submitBtn.textContent = loading ? 'Please wait...' : submitBtn.dataset.defaultLabel;
-  scheduleHeightSync();
-}
-
-function showMfaCard(email) {
-  pendingMfaEmail = email || '';
-
-  if (mfaCard) {
-    mfaCard.classList.remove('hidden');
-    mfaCard.setAttribute('aria-hidden', 'false');
-  }
-
-  if (signInCard) {
-    signInCard.classList.remove('is-active');
-    signInCard.setAttribute('aria-hidden', 'true');
-  }
-
-  if (signUpCard) {
-    signUpCard.setAttribute('aria-hidden', 'true');
-  }
-
-  if (mfaDescription) {
-    mfaDescription.textContent = `We sent a 6-digit verification code to ${email}.`;
-  }
-
-  if (mfaCode) {
-    mfaCode.value = '';
-    mfaCode.focus();
-  }
-
+  isResendingMfa = true;
+  updateResendButtonLabel();
   setMfaMessage('');
-  scheduleHeightSync();
-}
 
-function hideMfaCard() {
-  pendingMfaEmail = '';
-
-  if (mfaCard) {
-    mfaCard.classList.add('hidden');
-    mfaCard.setAttribute('aria-hidden', 'true');
+  try {
+    const data = await apiRequest('/api/auth/signin/resend-mfa', {});
+    if (data.emailSent) {
+      setMfaMessage(data.message || 'A new verification code was sent.', 'success');
+    } else if (data.verificationCode) {
+      setMfaMessage(`Email is not configured. Use this code: ${data.verificationCode}`, 'success');
+    } else {
+      setMfaMessage(data.message || 'A new verification code was sent.', 'success');
+    }
+    startResendCooldown(30);
+  } catch (error) {
+    setMfaMessage(error.message || 'Failed to resend verification code.', 'error');
+  } finally {
+    isResendingMfa = false;
+    updateResendButtonLabel();
   }
-
-  if (signInCard) {
-    signInCard.classList.add('is-active');
-    signInCard.setAttribute('aria-hidden', 'false');
-  }
-
-  setMfaMessage('');
-  scheduleHeightSync();
-}
-
-function setMfaMessage(text, type = '') {
-  if (!mfaMessage) return;
-  mfaMessage.textContent = text;
-  mfaMessage.classList.remove('error', 'success');
-  if (type) mfaMessage.classList.add(type);
-  scheduleHeightSync();
 }
 
 if (showSignInBtn) showSignInBtn.addEventListener('click', () => switchForm('signin'));
 if (showSignUpBtn) showSignUpBtn.addEventListener('click', () => switchForm('signup'));
 
-if (tabSignIn && tabSignUp) {
-  tabSignIn.addEventListener('click', () => switchForm('signin'));
-  tabSignUp.addEventListener('click', () => switchForm('signup'));
-  tabSignIn.addEventListener('keydown', (event) => {
-    if (event.key === 'ArrowRight') switchForm('signup');
-  });
-  tabSignUp.addEventListener('keydown', (event) => {
-    if (event.key === 'ArrowLeft') switchForm('signin');
-  });
-}
+if (tabSignIn) tabSignIn.addEventListener('click', () => switchForm('signin'));
+if (tabSignUp) tabSignUp.addEventListener('click', () => switchForm('signup'));
 
 switchBtns.forEach((btn) => {
-  btn.addEventListener('click', () => {
-    switchForm(btn.dataset.target);
-  });
+  btn.addEventListener('click', () => switchForm(btn.dataset.target));
 });
 
 if (themeToggle) {
@@ -334,71 +432,58 @@ togglePasswordBtns.forEach((btn) => {
 if (signUpPassword) {
   signUpPassword.addEventListener('input', () => {
     updateStrengthLabel(signUpPassword.value);
-
     if (confirmPassword && confirmPassword.value.length > 0) {
-      const mismatch = signUpPassword.value !== confirmPassword.value;
-      toggleInvalid(confirmPassword, mismatch);
+      toggleInvalid(confirmPassword, signUpPassword.value !== confirmPassword.value);
     }
   });
 }
 
 if (confirmPassword) {
   confirmPassword.addEventListener('input', () => {
-    const mismatch = signUpPassword.value !== confirmPassword.value;
-    toggleInvalid(confirmPassword, mismatch);
+    toggleInvalid(confirmPassword, signUpPassword.value !== confirmPassword.value);
   });
 }
 
 if (signInForm) {
   signInForm.addEventListener('submit', async (event) => {
     event.preventDefault();
-    setLoadingState(signInForm, true);
+    if (isSigningIn) return;
 
-    const email = normalizeEmail(signInEmail?.value);
-    const password = signInPassword?.value || '';
-    const validEmail = signInEmail?.checkValidity?.() ?? false;
-    const weak = password.length < 8;
+    isSigningIn = true;
+    clearMessage(signInMessage);
 
-    toggleInvalid(signInEmail, !validEmail);
-    toggleInvalid(signInPassword, weak);
-
-    if (!email || !password) {
-      showMessage(signInMessage, 'Please enter both email and password.', 'error');
-      setLoadingState(signInForm, false);
-      return;
-    }
-
-    if (!validEmail) {
-      showMessage(signInMessage, 'Enter a valid email address.', 'error');
-      setLoadingState(signInForm, false);
-      return;
-    }
-
-    if (weak) {
-      showMessage(signInMessage, 'Password must be at least 8 characters.', 'error');
-      setLoadingState(signInForm, false);
-      return;
-    }
+    const submitBtn = signInForm.querySelector('button[type="submit"]');
+    setButtonLoading(submitBtn, true, 'Signing in...');
 
     try {
-      const result = await apiRequest('/api/auth/signin', { email, password });
+      const email = normalizeEmail(signInEmail?.value);
+      const password = signInPassword?.value || '';
 
-      if (result?.mfaRequired) {
-        showMessage(signInMessage, '', '');
-        showMfaCard(email);
-        setLoadingState(signInForm, false);
+      if (!email || !password) {
+        showMessage(signInMessage, 'Please enter both email and password.', 'error');
         return;
       }
 
-      showMessage(signInMessage, 'Sign in successful. Redirecting...', 'success');
-      setLoadingState(signInForm, false);
+      const data = await apiRequest('/api/auth/signin', { email, password });
 
-      setTimeout(() => {
-        window.location.href = 'dashboard.html';
-      }, 450);
+      if (data.mfaRequired) {
+        showMfaCard(email);
+        if (data.emailSent) {
+          setMfaMessage('Enter the 6-digit code sent to your email.', 'success');
+        } else if (data.verificationCode) {
+          setMfaMessage(`Email is not configured. Use this code: ${data.verificationCode}`, 'success');
+        }
+      } else {
+        showMessage(signInMessage, data.message || 'Sign in successful.', 'success');
+        setTimeout(() => {
+          window.location.href = 'dashboard.html';
+        }, 500);
+      }
     } catch (error) {
-      showMessage(signInMessage, error.message || 'Invalid email or password.', 'error');
-      setLoadingState(signInForm, false);
+      showMessage(signInMessage, error.message || 'Sign in failed.', 'error');
+    } finally {
+      isSigningIn = false;
+      setButtonLoading(submitBtn, false);
     }
   });
 }
@@ -406,90 +491,55 @@ if (signInForm) {
 if (signUpForm) {
   signUpForm.addEventListener('submit', async (event) => {
     event.preventDefault();
-    setLoadingState(signUpForm, true);
+    if (isSigningUp) return;
 
-    const fullName = signUpName?.value.trim() || '';
-    const role = signUpRole?.value || 'student';
-    const adminAccessCode = adminCode?.value.trim() || '';
-    const email = normalizeEmail(signUpEmail?.value);
-    const password = signUpPassword?.value || '';
-    const confirm = confirmPassword?.value || '';
+    isSigningUp = true;
+    clearMessage(signUpMessage);
 
-    const validName = fullName.length >= 2;
-    const validRole = ['student', 'professor', 'administrator'].includes(role);
-    const validEmail = signUpEmail?.checkValidity?.() ?? false;
-    const strong = isStrongPassword(password);
-    const matched = password === confirm;
-
-    toggleInvalid(signUpName, !validName);
-    toggleInvalid(signUpRole, !validRole);
-    toggleInvalid(signUpEmail, !validEmail);
-    toggleInvalid(signUpPassword, !strong);
-    toggleInvalid(confirmPassword, !matched);
-
-    if (!fullName || !email || !password || !confirm || !role) {
-      showMessage(signUpMessage, 'Please complete all required fields.', 'error');
-      setLoadingState(signUpForm, false);
-      return;
-    }
-
-    if (!validRole) {
-      showMessage(signUpMessage, 'Please choose a valid role.', 'error');
-      setLoadingState(signUpForm, false);
-      return;
-    }
-
-    if (role === 'administrator' && !adminAccessCode) {
-      showMessage(signUpMessage, 'Admin access code is required for administrator role.', 'error');
-      setLoadingState(signUpForm, false);
-      return;
-    }
-
-    if (!validName) {
-      showMessage(signUpMessage, 'Full name must be at least 2 characters.', 'error');
-      setLoadingState(signUpForm, false);
-      return;
-    }
-
-    if (!validEmail) {
-      showMessage(signUpMessage, 'Enter a valid email address.', 'error');
-      setLoadingState(signUpForm, false);
-      return;
-    }
-
-    if (!strong) {
-      showMessage(signUpMessage, 'Use 8+ chars with upper/lowercase, number, and symbol.', 'error');
-      setLoadingState(signUpForm, false);
-      return;
-    }
-
-    if (!matched) {
-      showMessage(signUpMessage, 'Passwords do not match.', 'error');
-      setLoadingState(signUpForm, false);
-      return;
-    }
+    const submitBtn = signUpForm.querySelector('button[type="submit"]');
+    setButtonLoading(submitBtn, true, 'Creating...');
 
     try {
+      const fullName = signUpName?.value.trim() || '';
+      const role = signUpRole?.value || 'student';
+      const adminAccessCode = adminCode?.value.trim() || '';
+      const email = normalizeEmail(signUpEmail?.value);
+      const password = signUpPassword?.value || '';
+      const confirm = confirmPassword?.value || '';
+
+      if (!fullName || !email || !password || !confirm) {
+        showMessage(signUpMessage, 'Please complete all required fields.', 'error');
+        return;
+      }
+
+      if (password !== confirm) {
+        toggleInvalid(confirmPassword, true);
+        showMessage(signUpMessage, 'Passwords do not match.', 'error');
+        return;
+      }
+
       const result = await apiRequest('/api/auth/signup', {
         fullName,
         role,
-        adminCode: adminAccessCode,
+        adminCode: adminAccessCode || null,
         email,
         password
       });
 
       showMessage(signUpMessage, result.message || 'Account created successfully.', 'success');
+
       signUpForm.reset();
       updateStrengthLabel('');
-      setLoadingState(signUpForm, false);
+      if (adminCodeWrap) adminCodeWrap.classList.add('hidden');
 
       setTimeout(() => {
         switchForm('signin');
-        if (signInEmail) signInEmail.value = email;
-      }, 500);
+      }, 700);
     } catch (error) {
-      showMessage(signUpMessage, error.message || 'Failed to create account.', 'error');
-      setLoadingState(signUpForm, false);
+      showMessage(signUpMessage, error.message || 'Sign up failed.', 'error');
+    } finally {
+      isSigningUp = false;
+      setButtonLoading(submitBtn, false);
     }
   });
 }
@@ -497,66 +547,49 @@ if (signUpForm) {
 if (mfaForm) {
   mfaForm.addEventListener('submit', async (event) => {
     event.preventDefault();
+    if (isVerifyingMfa) return;
 
-    const code = String(mfaCode?.value || '').trim();
-
-    if (!/^\d{6}$/.test(code)) {
-      setMfaMessage('Enter a valid 6-digit code.', 'error');
-      return;
-    }
-
-    if (verifyMfaBtn) verifyMfaBtn.disabled = true;
-    setMfaMessage('Verifying code...');
+    isVerifyingMfa = true;
+    setMfaMessage('');
+    setButtonLoading(verifyMfaBtn, true, 'Verifying...');
 
     try {
-      await apiRequest('/api/auth/signin/verify-mfa', { code });
-
-      setMfaMessage('Verification successful.', 'success');
+      const code = String(mfaCode?.value || '').trim();
+      const data = await apiRequest('/api/auth/signin/verify-mfa', { code });
+      setMfaMessage(data.message || 'Verification successful.', 'success');
 
       setTimeout(() => {
         window.location.href = 'dashboard.html';
-      }, 400);
+      }, 500);
     } catch (error) {
-      setMfaMessage(error.message || 'Invalid code.', 'error');
+      setMfaMessage(error.message || 'Verification failed.', 'error');
     } finally {
-      if (verifyMfaBtn) verifyMfaBtn.disabled = false;
+      isVerifyingMfa = false;
+      setButtonLoading(verifyMfaBtn, false);
     }
   });
 }
 
 if (cancelMfaBtn) {
-  cancelMfaBtn.addEventListener('click', () => {
-    hideMfaCard();
-    showMessage(signInMessage, 'MFA cancelled. Please sign in again.');
-  });
+  cancelMfaBtn.addEventListener('click', () => hideMfaCard());
 }
 
-if (mfaCode) {
-  mfaCode.addEventListener('input', (event) => {
-    event.target.value = event.target.value.replace(/\D/g, '').slice(0, 6);
-  });
-}
+document.addEventListener('DOMContentLoaded', () => {
+  applyTheme(getPreferredTheme());
+  updateStrengthLabel(signUpPassword?.value || '');
 
-updateTabState();
-applyTheme(getPreferredTheme());
-
-if (signUpRole) {
-  signUpRole.dispatchEvent(new Event('change'));
-}
-
-if (formCarousel) {
-  syncCarouselHeight();
-  window.addEventListener('resize', scheduleHeightSync);
-  window.addEventListener('load', scheduleHeightSync);
-
-  if (document.fonts && document.fonts.ready) {
-    document.fonts.ready.then(scheduleHeightSync);
+  if (adminCodeWrap && signUpRole) {
+    const isAdmin = signUpRole.value === 'administrator';
+    adminCodeWrap.classList.toggle('hidden', !isAdmin);
   }
 
-  if (typeof ResizeObserver !== 'undefined' && signInCard && signUpCard) {
-    const observer = new ResizeObserver(() => scheduleHeightSync());
-    observer.observe(signInCard);
-    observer.observe(signUpCard);
-    if (mfaCard) observer.observe(mfaCard);
-  }
-}
+  if (signInCard) signInCard.setAttribute('aria-hidden', 'false');
+  if (signUpCard) signUpCard.setAttribute('aria-hidden', 'true');
+
+  ensureResendButton();
+  hideMfaCard();
+  updateTabState();
+  scheduleHeightSync();
+});
+
+window.addEventListener('resize', scheduleHeightSync);

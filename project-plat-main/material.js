@@ -1,428 +1,681 @@
-const THEME_KEY = 'vss-theme';
+const THEME_KEY = "vss-theme";
 
-const themeToggle = document.getElementById('themeToggle');
-const logoutBtn = document.getElementById('logoutBtn');
-const userBadge = document.getElementById('userBadge');
-const materialMsg = document.getElementById('materialMsg');
-const materialForm = document.getElementById('materialForm');
-const activityTitle = document.getElementById('activityTitle');
-const activityDescription = document.getElementById('activityDescription');
-const materialSubmitBtn = document.getElementById('materialSubmitBtn');
-const activitiesList = document.getElementById('activitiesList');
+const themeToggle = document.getElementById("themeToggle");
+const logoutBtn = document.getElementById("logoutBtn");
+const userBadge = document.getElementById("userBadge");
+const pageMessage = document.getElementById("pageMessage");
 
-// Quiz elements
-const quizFormCard = document.getElementById('quizFormCard');
-const quizMsg = document.getElementById('quizMsg');
-const quizForm = document.getElementById('quizForm');
-const quizTitle = document.getElementById('quizTitle');
-const quizDescription = document.getElementById('quizDescription');
-const quizType = document.getElementById('quizType');
-const quizSubmitBtn = document.getElementById('quizSubmitBtn');
-const quizList = document.getElementById('quizList');
+const typeTabs = document.querySelectorAll(".type-tab");
+const professorBuilderCard = document.getElementById("professorBuilderCard");
+const builderTitle = document.getElementById("builderTitle");
+const listTitle = document.getElementById("listTitle");
+const listHint = document.getElementById("listHint");
 
-// Exam elements
-const examFormCard = document.getElementById('examFormCard');
-const examMsg = document.getElementById('examMsg');
-const examForm = document.getElementById('examForm');
-const examTitle = document.getElementById('examTitle');
-const examDescription = document.getElementById('examDescription');
-const examSubmitBtn = document.getElementById('examSubmitBtn');
-const examList = document.getElementById('examList');
+const builderForm = document.getElementById("builderForm");
+const formTitle = document.getElementById("formTitle");
+const formDescription = document.getElementById("formDescription");
+const addShortAnswerBtn = document.getElementById("addShortAnswerBtn");
+const addParagraphBtn = document.getElementById("addParagraphBtn");
+const addMultipleChoiceBtn = document.getElementById("addMultipleChoiceBtn");
+const builderQuestions = document.getElementById("builderQuestions");
+const saveFormBtn = document.getElementById("saveFormBtn");
+
+const formsList = document.getElementById("formsList");
+
+const detailTitle = document.getElementById("detailTitle");
+const detailHint = document.getElementById("detailHint");
+const emptyDetail = document.getElementById("emptyDetail");
+const detailCard = document.getElementById("detailCard");
+const detailFormTitle = document.getElementById("detailFormTitle");
+const detailDescription = document.getElementById("detailDescription");
+const detailCreatedMeta = document.getElementById("detailCreatedMeta");
+
+const studentAnswerForm = document.getElementById("studentAnswerForm");
+const professorSubmissionPanel = document.getElementById("professorSubmissionPanel");
+const submissionsList = document.getElementById("submissionsList");
+
+const questionTemplate = document.getElementById("questionTemplate");
+
+const studentScorePanel = document.getElementById("studentScorePanel");
+const studentScoreValue = document.getElementById("studentScoreValue");
+const studentSubmittedAt = document.getElementById("studentSubmittedAt");
+const studentGradedAt = document.getElementById("studentGradedAt");
+const studentFeedbackText = document.getElementById("studentFeedbackText");
+
+let currentUser = null;
+let currentKind = "activity";
+let currentItems = [];
+let selectedItem = null;
+
+function renderStudentScorePanel(mySubmission) {
+  if (!studentScorePanel) return;
+
+  if (!mySubmission) {
+    studentScorePanel.classList.add("hidden");
+    return;
+  }
+
+  studentScorePanel.classList.remove("hidden");
+  studentScoreValue.textContent =
+    mySubmission.score !== null && mySubmission.score !== undefined
+      ? String(mySubmission.score)
+      : "Not graded";
+
+  studentSubmittedAt.textContent = mySubmission.submittedAt
+    ? formatDate(mySubmission.submittedAt)
+    : "-";
+
+  studentGradedAt.textContent = mySubmission.gradedAt
+    ? formatDate(mySubmission.gradedAt)
+    : "Not graded yet";
+
+  studentFeedbackText.textContent =
+    mySubmission.feedback && mySubmission.feedback.trim()
+      ? mySubmission.feedback
+      : "No feedback yet.";
+}
 
 function getPreferredTheme() {
   const saved = localStorage.getItem(THEME_KEY);
-  if (saved === 'light' || saved === 'dark') return saved;
-  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  if (saved === "light" || saved === "dark") return saved;
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
 function applyTheme(theme) {
-  document.documentElement.setAttribute('data-theme', theme);
-  themeToggle.setAttribute('aria-label', theme === 'dark' ? 'Enable light mode' : 'Enable dark mode');
+  document.documentElement.setAttribute("data-theme", theme);
+  if (themeToggle) {
+    themeToggle.setAttribute(
+      "aria-label",
+      theme === "dark" ? "Enable light mode" : "Enable dark mode"
+    );
+  }
 }
 
-function setMessage(text, state = 'muted') {
-  materialMsg.textContent = text;
-  materialMsg.dataset.state = state;
+function setPageMessage(message = "", isError = false) {
+  pageMessage.textContent = message;
+  pageMessage.className = `form-msg${isError ? " error" : ""}`;
+}
+
+function prettyKind(kind) {
+  if (kind === "quiz") return "Quiz";
+  if (kind === "exam") return "Exam";
+  return "Activity";
+}
+
+function prettyType(type) {
+  if (type === "short_answer") return "Short Answer";
+  if (type === "paragraph") return "Paragraph";
+  if (type === "multiple_choice") return "Multiple Choice";
+  return type || "-";
+}
+
+function formatDate(value) {
+  if (!value) return "-";
+  try {
+    return new Date(value).toLocaleString();
+  } catch {
+    return value;
+  }
+}
+
+async function gradeSubmission(submissionId, payload) {
+  return apiJson(`/api/forms/submissions/${encodeURIComponent(submissionId)}/grade`, {
+    method: "PATCH",
+    body: JSON.stringify(payload)
+  });
 }
 
 async function getCurrentUser() {
-  const response = await fetch('/api/auth/me', { credentials: 'same-origin' });
+  const response = await fetch("/api/auth/me", { credentials: "same-origin" });
   if (!response.ok) return null;
   return response.json();
 }
 
-async function getActivities() {
-  const response = await fetch('/api/material', { credentials: 'same-origin' });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.message || 'Failed to load activities.');
-  return data.activities || [];
-}
-
-async function createActivity(title, description) {
-  const response = await fetch('/api/material', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'same-origin',
-    body: JSON.stringify({ title, description })
+async function apiJson(url, options = {}) {
+  const response = await fetch(url, {
+    credentials: "same-origin",
+    headers: {
+      "Content-Type": "application/json",
+      ...(options.headers || {})
+    },
+    ...options
   });
-  const raw = await response.text();
-  let data = {};
-  try {
-    data = raw ? JSON.parse(raw) : {};
-  } catch {
-    data = { message: raw || `Server returned ${response.status}` };
+
+  const data = await response.json().catch(() => ({
+    message: "Unexpected server response."
+  }));
+
+  if (!response.ok) {
+    throw new Error(data.detail || data.message || "Request failed.");
   }
-  if (!response.ok) throw new Error(data.message || `Failed to create activity (${response.status}).`);
+
   return data;
 }
 
-async function deleteActivity(id) {
-  const response = await fetch(`/api/material/${encodeURIComponent(id)}`, {
-    method: 'DELETE',
-    credentials: 'same-origin'
+/*
+  Expected backend routes for the next step:
+
+  GET    /api/forms?kind=activity|quiz|exam
+  POST   /api/forms
+  GET    /api/forms/{form_id}
+  DELETE /api/forms/{form_id}
+  POST   /api/forms/{form_id}/submit
+  GET    /api/forms/{form_id}/submissions
+*/
+
+async function fetchForms(kind) {
+  return apiJson(`/api/forms?kind=${encodeURIComponent(kind)}`);
+}
+
+async function createForm(payload) {
+  return apiJson("/api/forms", {
+    method: "POST",
+    body: JSON.stringify(payload)
   });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.message || 'Failed to delete activity.');
-  return data;
 }
 
-function renderActivities(activities, currentUserEmail) {
-  if (!activities || activities.length === 0) {
-    activitiesList.innerHTML = '<p class="empty-activities">No activities yet. Add one above.</p>';
+async function fetchFormDetail(formId) {
+  return apiJson(`/api/forms/${encodeURIComponent(formId)}`);
+}
+
+async function deleteForm(formId) {
+  return apiJson(`/api/forms/${encodeURIComponent(formId)}`, {
+    method: "DELETE"
+  });
+}
+
+async function submitFormAnswers(formId, payload) {
+  return apiJson(`/api/forms/${encodeURIComponent(formId)}/submit`, {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+async function fetchSubmissions(formId) {
+  return apiJson(`/api/forms/${encodeURIComponent(formId)}/submissions`);
+}
+
+function updateTitles() {
+  const label = prettyKind(currentKind);
+  builderTitle.textContent = `Create ${label}`;
+  listTitle.textContent = `Published ${label}${currentKind === "activity" ? "s" : "s"}`;
+  detailTitle.textContent = `${label} Details`;
+  listHint.textContent =
+    currentUser?.role === "professor"
+      ? `Create, review, and manage ${label.toLowerCase()} items.`
+      : `Open a ${label.toLowerCase()} and answer it.`;
+}
+
+function updateRoleUi() {
+  const role = String(currentUser?.role || "").toLowerCase();
+  const isProfessor = role === "professor";
+  professorBuilderCard.classList.toggle("hidden", !isProfessor);
+
+  userBadge.textContent = `Signed in as ${currentUser?.email || "-"} (${role || "user"})`;
+
+  updateTitles();
+}
+
+function setActiveTab(kind) {
+  currentKind = kind;
+  typeTabs.forEach((tab) => {
+    tab.classList.toggle("is-active", tab.dataset.kind === kind);
+  });
+  updateTitles();
+}
+
+function createQuestionBuilderCard(type = "short_answer") {
+  const fragment = questionTemplate.content.cloneNode(true);
+  const card = fragment.querySelector(".question-builder-card");
+  const typeSelect = fragment.querySelector(".question-type");
+  const choicesWrap = fragment.querySelector(".choices-wrap");
+  const removeBtn = fragment.querySelector(".remove-question-btn");
+
+  typeSelect.value = type;
+  choicesWrap.classList.toggle("hidden", type !== "multiple_choice");
+
+  typeSelect.addEventListener("change", () => {
+    choicesWrap.classList.toggle("hidden", typeSelect.value !== "multiple_choice");
+  });
+
+  removeBtn.addEventListener("click", () => {
+    card.remove();
+    renumberQuestionCards();
+  });
+
+  builderQuestions.appendChild(fragment);
+  renumberQuestionCards();
+}
+
+function renumberQuestionCards() {
+  [...builderQuestions.querySelectorAll(".question-builder-card")].forEach((card, index) => {
+    const badge = card.querySelector(".question-badge");
+    if (badge) badge.textContent = `Question ${index + 1}`;
+  });
+}
+
+function collectBuilderQuestions() {
+  const cards = [...builderQuestions.querySelectorAll(".question-builder-card")];
+
+  return cards.map((card) => {
+    const type = card.querySelector(".question-type")?.value || "short_answer";
+    const text = card.querySelector(".question-text")?.value.trim() || "";
+    const required = card.querySelector(".question-required")?.checked || false;
+    const rawChoices = card.querySelector(".question-choices")?.value || "";
+
+    return {
+      question: text,
+      type,
+      required,
+      choices:
+        type === "multiple_choice"
+          ? rawChoices
+              .split("\n")
+              .map((item) => item.trim())
+              .filter(Boolean)
+          : []
+    };
+  });
+}
+
+function resetBuilder() {
+  builderForm.reset();
+  builderQuestions.innerHTML = "";
+  createQuestionBuilderCard("short_answer");
+}
+
+function renderFormsList(items) {
+  currentItems = items || [];
+
+  if (!currentItems.length) {
+    formsList.innerHTML = `<article class="empty-state">No ${currentKind}s published yet.</article>`;
     return;
   }
-  activitiesList.innerHTML = activities
+
+  const isProfessor = String(currentUser?.role || "").toLowerCase() === "professor";
+
+  formsList.innerHTML = currentItems
     .map(
-      (a) => `
-      <article class="activity-item" data-activity-id="${a.id}">
-        <div class="activity-item-content">
-          <h3>${escapeHtml(a.title)}</h3>
-          ${a.description ? `<p>${escapeHtml(a.description)}</p>` : ''}
-          <p class="activity-meta">By ${escapeHtml(a.createdByEmail)} · ${new Date(a.createdAt).toLocaleString()}</p>
-        </div>
-        ${
-          currentUserEmail && a.createdByEmail === currentUserEmail
-            ? `<div class="activity-item-actions"><button type="button" class="delete-activity-btn" data-id="${a.id}">Delete</button></div>`
-            : ''
-        }
-      </article>
-    `
+      (item) => `
+        <article class="form-list-item ${selectedItem?.id === item.id ? "is-selected" : ""}" data-form-id="${item.id}">
+          <div class="form-list-main">
+            <h3>${item.title || "-"}</h3>
+            <p>${item.description || "-"}</p>
+            <p class="muted">By ${item.createdByEmail || "-"} · ${formatDate(item.createdAt)}</p>
+          </div>
+          <div class="form-list-actions">
+            <button class="secondary-btn open-form-btn" type="button">Open</button>
+            ${
+              isProfessor
+                ? `<button class="danger-btn delete-form-btn" type="button">Delete</button>`
+                : ""
+            }
+          </div>
+        </article>
+      `
     )
-    .join('');
+    .join("");
 }
 
-function escapeHtml(str) {
-  if (!str) return '';
-  const div = document.createElement('div');
-  div.textContent = str;
-  return div.innerHTML;
-}
+async function openForm(formId) {
+  const detail = await fetchFormDetail(formId);
+  selectedItem = detail;
 
-async function loadActivities() {
-  setMessage('Loading...', 'muted');
-  try {
-    const activities = await getActivities();
-    const user = await getCurrentUser();
-    renderActivities(activities, user?.email || null);
-    setMessage('');
-  } catch (err) {
-    setMessage(err.message || 'Failed to load activities.', 'error');
-    activitiesList.innerHTML = '';
+  emptyDetail.classList.add("hidden");
+  detailCard.classList.remove("hidden");
+
+  detailFormTitle.textContent = detail.title || "-";
+  detailDescription.textContent = detail.description || "-";
+  detailCreatedMeta.textContent = `By ${detail.createdByEmail || "-"} · ${formatDate(detail.createdAt)}`;
+
+  const role = String(currentUser?.role || "").toLowerCase();
+
+  if (role === "student") {
+    professorSubmissionPanel.classList.add("hidden");
+    renderStudentScorePanel(detail.mySubmission || null);
+    renderStudentAnswerForm(detail);
+  } else {
+    if (studentScorePanel) studentScorePanel.classList.add("hidden");
+    studentAnswerForm.classList.add("hidden");
+    professorSubmissionPanel.classList.remove("hidden");
+    const submissions = await fetchSubmissions(formId);
+    renderProfessorSubmissions(submissions);
   }
+
+  renderFormsList(currentItems);
 }
 
-applyTheme(getPreferredTheme());
+function renderProfessorSubmissions(submissions) {
+  const items = submissions?.submissions || [];
 
-themeToggle.addEventListener('click', () => {
-  const current = document.documentElement.getAttribute('data-theme') || 'light';
-  const next = current === 'dark' ? 'light' : 'dark';
-  applyTheme(next);
-  localStorage.setItem(THEME_KEY, next);
-});
-
-logoutBtn.addEventListener('click', async () => {
-  await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' });
-  window.location.href = 'index.html';
-});
-
-materialForm.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const title = activityTitle.value.trim();
-  const description = activityDescription.value.trim();
-  if (!title) {
-    setMessage('Title is required.', 'error');
+  if (!items.length) {
+    submissionsList.innerHTML = `<article class="empty-state">No submissions yet.</article>`;
     return;
   }
-  materialSubmitBtn.disabled = true;
-  materialSubmitBtn.textContent = 'Adding...';
-  setMessage('');
-  try {
-    await createActivity(title, description);
-    activityTitle.value = '';
-    activityDescription.value = '';
-    setMessage('Activity added.', 'success');
-    await loadActivities();
-  } catch (err) {
-    setMessage(err.message || 'Failed to add activity.', 'error');
-  } finally {
-    materialSubmitBtn.disabled = false;
-    materialSubmitBtn.textContent = 'Add Activity';
-  }
-});
 
-activitiesList.addEventListener('click', async (e) => {
-  const btn = e.target.closest('.delete-activity-btn');
-  if (!btn) return;
-  const id = btn.dataset.id;
-  if (!id) return;
-  if (!confirm('Delete this activity?')) return;
-  btn.disabled = true;
-  try {
-    await deleteActivity(id);
-    await loadActivities();
-    setMessage('Activity deleted.', 'success');
-  } catch (err) {
-    setMessage(err.message || 'Failed to delete.', 'error');
-  } finally {
-    btn.disabled = false;
-  }
-});
-
-// Quiz functions
-async function getQuizzes() {
-  const response = await fetch('/api/quiz', { credentials: 'same-origin' });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.message || 'Failed to load quizzes.');
-  return data.quizzes || [];
-}
-
-async function createQuiz(title, description, quizType) {
-  const response = await fetch('/api/quiz', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'same-origin',
-    body: JSON.stringify({ title, description, quizType })
-  });
-  const raw = await response.text();
-  let data = {};
-  try {
-    data = raw ? JSON.parse(raw) : {};
-  } catch {
-    data = { message: raw || `Server returned ${response.status}` };
-  }
-  if (!response.ok) throw new Error(data.message || `Failed to create quiz (${response.status}).`);
-  return data;
-}
-
-async function deleteQuiz(id) {
-  const response = await fetch(`/api/quiz/${encodeURIComponent(id)}`, {
-    method: 'DELETE',
-    credentials: 'same-origin'
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.message || 'Failed to delete quiz.');
-  return data;
-}
-
-function renderQuizzes(quizzes, currentUserEmail) {
-  if (!quizzes || quizzes.length === 0) {
-    quizList.innerHTML = '<p class="empty-quizzes">No quizzes/exams yet. Add one above.</p>';
-    return;
-  }
-  quizList.innerHTML = quizzes
+  submissionsList.innerHTML = items
     .map(
-      (q) => `
-      <article class="quiz-item" data-quiz-id="${q.id}">
-        <div class="quiz-item-content">
-          <h3>${escapeHtml(q.title)} <span class="quiz-type-badge">${q.quizType === 'exam' ? 'Exam' : 'Quiz'}</span></h3>
-          ${q.description ? `<p>${escapeHtml(q.description)}</p>` : ''}
-          <p class="quiz-meta">By ${escapeHtml(q.createdByEmail)} · ${new Date(q.createdAt).toLocaleString()}</p>
-        </div>
-        ${
-          currentUserEmail && q.createdByEmail === currentUserEmail
-            ? `<div class="quiz-item-actions"><button type="button" class="delete-quiz-btn" data-id="${q.id}">Delete</button></div>`
-            : ''
-        }
-      </article>
-    `
+      (submission) => `
+        <article class="submission-card" data-submission-id="${submission.submissionId}">
+          <h5>${submission.studentEmail || "-"}</h5>
+          <p class="muted">Submitted: ${formatDate(submission.submittedAt)}</p>
+          <p class="muted">
+            Score: ${submission.score ?? "Not graded"}
+            ${submission.gradedAt ? `· Graded: ${formatDate(submission.gradedAt)}` : ""}
+          </p>
+
+          <div class="submission-answers">
+            ${(submission.answers || [])
+              .map(
+                (answer, index) => `
+                  <div class="submission-answer-item">
+                    <strong>${index + 1}. ${answer.question || "-"}</strong>
+                    <p>${answer.answer || "-"}</p>
+                  </div>
+                `
+              )
+              .join("")}
+          </div>
+
+          <div class="grading-box">
+            <label>
+              Score
+              <input class="grade-score-input" type="number" step="0.01" min="0" value="${submission.score ?? ""}" />
+            </label>
+
+            <label>
+              Feedback
+              <textarea class="grade-feedback-input" rows="3" placeholder="Add feedback...">${submission.feedback || ""}</textarea>
+            </label>
+
+            <button class="primary-btn save-grade-btn" type="button">Save Grade</button>
+          </div>
+        </article>
+      `
     )
-    .join('');
+    .join("");
 }
 
-function setQuizMessage(text, state = 'muted') {
-  quizMsg.textContent = text;
-  quizMsg.dataset.state = state;
+function showEmptyDetail() {
+  selectedItem = null;
+  detailCard.classList.add("hidden");
+  emptyDetail.classList.remove("hidden");
+  studentAnswerForm.classList.add("hidden");
+  professorSubmissionPanel.classList.add("hidden");
+  if (studentScorePanel) studentScorePanel.classList.add("hidden");
+  submissionsList.innerHTML = "";
+}
+async function openForm(formId) {
+  const detail = await fetchFormDetail(formId);
+  selectedItem = detail;
+
+  emptyDetail.classList.add("hidden");
+  detailCard.classList.remove("hidden");
+
+  detailFormTitle.textContent = detail.title || "-";
+  detailDescription.textContent = detail.description || "-";
+  detailCreatedMeta.textContent = `By ${detail.createdByEmail || "-"} · ${formatDate(detail.createdAt)}`;
+
+  const role = String(currentUser?.role || "").toLowerCase();
+
+  if (role === "student") {
+    professorSubmissionPanel.classList.add("hidden");
+    renderStudentScorePanel(detail.mySubmission || null);
+    renderStudentAnswerForm(detail);
+  } else {
+    if (studentScorePanel) studentScorePanel.classList.add("hidden");
+    studentAnswerForm.classList.add("hidden");
+    professorSubmissionPanel.classList.remove("hidden");
+    const submissions = await fetchSubmissions(formId);
+    renderProfessorSubmissions(submissions);
+  }
+
+  renderFormsList(currentItems);
 }
 
-async function loadQuizzes() {
-  setQuizMessage('Loading...', 'muted');
-  try {
-    const allQuizzes = await getQuizzes();
-    const quizzes = allQuizzes.filter(q => q.quizType === 'quiz');
-    const user = await getCurrentUser();
-    renderQuizzes(quizzes, user?.email || null);
-    setQuizMessage('');
-  } catch (err) {
-    setQuizMessage(err.message || 'Failed to load quizzes.', 'error');
-    quizList.innerHTML = '';
-  }
+async function loadForms() {
+  showEmptyDetail();
+  setPageMessage("");
+
+  const data = await fetchForms(currentKind);
+  renderFormsList(data.forms || []);
 }
 
-quizForm.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const title = quizTitle.value.trim();
-  const description = quizDescription.value.trim();
-  const type = quizType.value;
-  if (!title) {
-    setQuizMessage('Title is required.', 'error');
-    return;
-  }
-  quizSubmitBtn.disabled = true;
-  quizSubmitBtn.textContent = 'Adding...';
-  setQuizMessage('');
-  try {
-    await createQuiz(title, description, type);
-    quizTitle.value = '';
-    quizDescription.value = '';
-    setQuizMessage('Quiz/Exam added.', 'success');
-    await loadQuizzes();
-  } catch (err) {
-    setQuizMessage(err.message || 'Failed to add quiz.', 'error');
-  } finally {
-    quizSubmitBtn.disabled = false;
-    quizSubmitBtn.textContent = 'Add Quiz/Exam';
-  }
+typeTabs.forEach((tab) => {
+  tab.addEventListener("click", async () => {
+    setActiveTab(tab.dataset.kind);
+    await loadForms();
+  });
 });
 
-quizList.addEventListener('click', async (e) => {
-  const btn = e.target.closest('.delete-quiz-btn');
-  if (!btn) return;
-  const id = btn.dataset.id;
-  if (!id) return;
-  if (!confirm('Delete this quiz?')) return;
-  btn.disabled = true;
-  try {
-    await deleteQuiz(id);
-    await loadQuizzes();
-    setQuizMessage('Quiz deleted.', 'success');
-  } catch (err) {
-    setQuizMessage(err.message || 'Failed to delete.', 'error');
-  } finally {
-    btn.disabled = false;
-  }
-});
-
-// Exam functions
-function renderExams(exams, currentUserEmail) {
-  if (!exams || exams.length === 0) {
-    examList.innerHTML = '<p class="empty-quizzes">No exams yet. Add one above.</p>';
-    return;
-  }
-  examList.innerHTML = exams
-    .map(
-      (q) => `
-      <article class="quiz-item" data-quiz-id="${q.id}">
-        <div class="quiz-item-content">
-          <h3>${escapeHtml(q.title)} <span class="quiz-type-badge exam">Exam</span></h3>
-          ${q.description ? `<p>${escapeHtml(q.description)}</p>` : ''}
-          <p class="quiz-meta">By ${escapeHtml(q.createdByEmail)} · ${new Date(q.createdAt).toLocaleString()}</p>
-        </div>
-        ${
-          currentUserEmail && q.createdByEmail === currentUserEmail
-            ? `<div class="quiz-item-actions"><button type="button" class="delete-quiz-btn" data-id="${q.id}">Delete</button></div>`
-            : ''
-        }
-      </article>
-    `
-    )
-    .join('');
+if (addShortAnswerBtn) {
+  addShortAnswerBtn.addEventListener("click", () => createQuestionBuilderCard("short_answer"));
+}
+if (addParagraphBtn) {
+  addParagraphBtn.addEventListener("click", () => createQuestionBuilderCard("paragraph"));
+}
+if (addMultipleChoiceBtn) {
+  addMultipleChoiceBtn.addEventListener("click", () => createQuestionBuilderCard("multiple_choice"));
 }
 
-function setExamMessage(text, state = 'muted') {
-  examMsg.textContent = text;
-  examMsg.dataset.state = state;
+if (builderForm) {
+  builderForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+
+    const title = formTitle.value.trim();
+    const description = formDescription.value.trim();
+    const questions = collectBuilderQuestions();
+
+    if (!title || !description) {
+      setPageMessage("Title and description are required.", true);
+      return;
+    }
+
+    if (!questions.length) {
+      setPageMessage("Add at least one question.", true);
+      return;
+    }
+
+    if (questions.some((q) => !q.question)) {
+      setPageMessage("Each question must have text.", true);
+      return;
+    }
+
+    if (questions.some((q) => q.type === "multiple_choice" && (!q.choices || q.choices.length < 2))) {
+      setPageMessage("Multiple choice questions need at least 2 choices.", true);
+      return;
+    }
+
+    saveFormBtn.disabled = true;
+    saveFormBtn.textContent = "Publishing...";
+    setPageMessage("");
+
+    try {
+      const payload = {
+        kind: currentKind,
+        title,
+        description,
+        questions
+      };
+
+      const result = await createForm(payload);
+      setPageMessage(result.message || `${prettyKind(currentKind)} created.`);
+      resetBuilder();
+      await loadForms();
+    } catch (error) {
+      setPageMessage(error.message || "Failed to publish form.", true);
+    } finally {
+      saveFormBtn.disabled = false;
+      saveFormBtn.textContent = "Publish Form";
+    }
+  });
 }
 
-async function loadExams() {
-  setExamMessage('Loading...', 'muted');
-  try {
-    const quizzes = await getQuizzes();
-    const exams = quizzes.filter(q => q.quizType === 'exam');
-    const user = await getCurrentUser();
-    renderExams(exams, user?.email || null);
-    setExamMessage('');
-  } catch (err) {
-    setExamMessage(err.message || 'Failed to load exams.', 'error');
-    examList.innerHTML = '';
-  }
+if (formsList) {
+  formsList.addEventListener("click", async (event) => {
+    const item = event.target.closest(".form-list-item");
+    if (!item) return;
+
+    const formId = item.dataset.formId;
+    if (!formId) return;
+
+    if (event.target.closest(".open-form-btn")) {
+      try {
+        await openForm(formId);
+      } catch (error) {
+        setPageMessage(error.message || "Failed to open form.", true);
+      }
+      return;
+    }
+
+    if (event.target.closest(".delete-form-btn")) {
+      const confirmed = window.confirm("Delete this form?");
+      if (!confirmed) return;
+
+      try {
+        const result = await deleteForm(formId);
+        setPageMessage(result.message || "Form deleted.");
+        await loadForms();
+      } catch (error) {
+        setPageMessage(error.message || "Failed to delete form.", true);
+      }
+    }
+  });
 }
 
-examForm.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const title = examTitle.value.trim();
-  const description = examDescription.value.trim();
-  if (!title) {
-    setExamMessage('Title is required.', 'error');
-    return;
-  }
-  examSubmitBtn.disabled = true;
-  examSubmitBtn.textContent = 'Adding...';
-  setExamMessage('');
-  try {
-    await createQuiz(title, description, 'exam');
-    examTitle.value = '';
-    examDescription.value = '';
-    setExamMessage('Exam added.', 'success');
-    await loadExams();
-  } catch (err) {
-    setExamMessage(err.message || 'Failed to add exam.', 'error');
-  } finally {
-    examSubmitBtn.disabled = false;
-    examSubmitBtn.textContent = 'Add Exam';
-  }
-});
+if (submissionsList) {
+  submissionsList.addEventListener("click", async (event) => {
+    const saveBtn = event.target.closest(".save-grade-btn");
+    if (!saveBtn) return;
 
-(async () => {
-  const user = await getCurrentUser();
-  if (!user) {
-    window.location.href = 'index.html';
+    const card = event.target.closest(".submission-card");
+    if (!card) return;
+
+    const submissionId = card.dataset.submissionId;
+    const scoreInput = card.querySelector(".grade-score-input");
+    const feedbackInput = card.querySelector(".grade-feedback-input");
+
+    if (!submissionId || !scoreInput) return;
+
+    const scoreValue = scoreInput.value.trim();
+
+    if (scoreValue === "") {
+      setPageMessage("Score is required.", true);
+      return;
+    }
+
+    saveBtn.disabled = true;
+    saveBtn.textContent = "Saving...";
+
+    try {
+      const result = await gradeSubmission(submissionId, {
+        score: Number(scoreValue),
+        feedback: String(feedbackInput?.value || "").trim()
+      });
+
+      setPageMessage(result.message || "Grade saved.");
+
+      if (selectedItem?.id) {
+        await openForm(selectedItem.id);
+      }
+
+    } catch (error) {
+      setPageMessage(error.message || "Failed to save grade.", true);
+    } finally {
+      saveBtn.disabled = false;
+      saveBtn.textContent = "Save Grade";
+    }
+  });
+}
+
+if (studentAnswerForm) {
+  studentAnswerForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+
+    if (!selectedItem?.id) return;
+
+    const answers = [];
+
+    const questionIds = [...studentAnswerForm.querySelectorAll("[data-question-id]")]
+      .map((el) => el.dataset.questionId)
+      .filter((value, index, array) => array.indexOf(value) === index);
+
+    questionIds.forEach((questionId) => {
+      const radioInputs = studentAnswerForm.querySelectorAll(`input[type="radio"][data-question-id="${questionId}"]`);
+      if (radioInputs.length) {
+        const checked = [...radioInputs].find((input) => input.checked);
+        answers.push({
+          questionId: Number(questionId),
+          answer: checked ? checked.value : ""
+        });
+        return;
+      }
+
+      const input = studentAnswerForm.querySelector(`[data-question-id="${questionId}"]`);
+      answers.push({
+        questionId: Number(questionId),
+        answer: input ? String(input.value || "").trim() : ""
+      });
+    });
+
+    const submitBtn = document.getElementById("submitStudentAnswersBtn");
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Submitting...";
+    }
+
+    try {
+      const result = await submitFormAnswers(selectedItem.id, { answers });
+      setPageMessage(result.message || "Answers submitted.");
+      await openForm(selectedItem.id);
+    } catch (error) {
+      setPageMessage(error.message || "Failed to submit answers.", true);
+    } finally {
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Submit Answers";
+      }
+    }
+  });
+}
+
+if (themeToggle) {
+  themeToggle.addEventListener("click", () => {
+    const current = document.documentElement.getAttribute("data-theme") || "light";
+    const next = current === "dark" ? "light" : "dark";
+    applyTheme(next);
+    localStorage.setItem(THEME_KEY, next);
+  });
+}
+
+if (logoutBtn) {
+  logoutBtn.addEventListener("click", async () => {
+    await fetch("/api/auth/logout", {
+      method: "POST",
+      credentials: "same-origin"
+    });
+    window.location.href = "index.html";
+  });
+}
+
+(async function initMaterialPage() {
+  applyTheme(getPreferredTheme());
+
+  currentUser = await getCurrentUser();
+  if (!currentUser) {
+    window.location.href = "index.html";
     return;
   }
-  const role = (user.role || '').toLowerCase();
-  userBadge.textContent = `Signed in as ${user.email} (${user.role || 'student'})`;
-  
-  // Hide tabs for students - only professors can create content
-  if (role === 'student') {
-    const tabsEl = document.querySelector('.tabs');
-    if (tabsEl) tabsEl.style.display = 'none';
-    // Show all content for students (no tabs)
-    document.querySelectorAll('.tab-content').forEach(el => el.classList.add('active'));
+
+  const role = String(currentUser.role || "").toLowerCase();
+  if (!["student", "professor"].includes(role)) {
+    setPageMessage("This page is only available for professors and students.", true);
+    professorBuilderCard.classList.add("hidden");
+    formsList.innerHTML = `<article class="empty-state">Access denied.</article>`;
+    return;
   }
-  if (role === 'student') {
-    const formCard = document.getElementById('materialFormCard');
-    if (formCard) formCard.style.display = 'none';
-    const quizFormCardEl = document.getElementById('quizFormCard');
-    if (quizFormCardEl) quizFormCardEl.style.display = 'none';
-    const examFormCardEl = document.getElementById('examFormCard');
-    if (examFormCardEl) examFormCardEl.style.display = 'none';
-  }
-  await loadActivities();
-  await loadQuizzes();
-  await loadExams();
+
+  updateRoleUi();
+  resetBuilder();
+  await loadForms();
 })();
-
-// Tab switching
-document.querySelectorAll('.tab-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    // Remove active class from all buttons and contents
-    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-    
-    // Add active class to clicked button
-    btn.classList.add('active');
-    
-    // Show corresponding content
-    const tabId = btn.dataset.tab;
-    document.getElementById(`tab-${tabId}`).classList.add('active');
-  });
-});

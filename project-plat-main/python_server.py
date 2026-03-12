@@ -1,3 +1,5 @@
+from dotenv import load_dotenv
+from pathlib import Path
 import os
 import re
 import sqlite3
@@ -9,7 +11,6 @@ import json
 import smtplib
 import asyncio
 from datetime import datetime, timedelta
-from pathlib import Path
 from email.message import EmailMessage
 
 from fastapi import FastAPI, HTTPException, Request
@@ -19,9 +20,13 @@ from pydantic import BaseModel
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.responses import Response
 
+from blockchain_audit import BlockchainAuditService
 
 BASE_DIR = Path(__file__).resolve().parent
+ENV_PATH = BASE_DIR / ".env"
 DB_PATH = BASE_DIR / "app.db"
+
+load_dotenv(dotenv_path=ENV_PATH, override=True)
 
 SESSION_SECRET = os.getenv(
     "SESSION_SECRET", "replace-this-in-production-with-long-random-secret"
@@ -37,10 +42,54 @@ SMTP_USER = (os.getenv("SMTP_USER") or os.getenv("GMAIL_ADDRESS") or "").strip()
 SMTP_PASS = (os.getenv("SMTP_PASS") or os.getenv("GMAIL_APP_PASSWORD") or "").strip()
 SMTP_FROM = (os.getenv("SMTP_FROM") or SMTP_USER or "").strip()
 
+GANACHE_RPC_URL = os.getenv("GANACHE_RPC_URL", "http://127.0.0.1:7545").strip()
+BLOCKCHAIN_CONTRACT_ADDRESS = os.getenv("BLOCKCHAIN_CONTRACT_ADDRESS", "").strip()
+BLOCKCHAIN_PRIVATE_KEY = os.getenv("BLOCKCHAIN_PRIVATE_KEY", "").strip()
+BLOCKCHAIN_ENABLED = os.getenv("BLOCKCHAIN_ENABLED", "false").strip().lower() == "true"
+
 AUTH_MFA_ENABLED = os.getenv("AUTH_MFA_ENABLED", "true").strip().lower() != "false"
 AUTH_LOCKOUT_MAX_ATTEMPTS = max(int(os.getenv("AUTH_LOCKOUT_MAX_ATTEMPTS", "5")), 3)
 AUTH_LOCKOUT_MINUTES = max(int(os.getenv("AUTH_LOCKOUT_MINUTES", "15")), 5)
 AUTH_MFA_EMAIL_ACTIVE = AUTH_MFA_ENABLED and bool(SMTP_USER and SMTP_PASS and SMTP_FROM)
+
+
+def is_valid_eth_address(value: str) -> bool:
+    value = (value or "").strip()
+    return re.fullmatch(r"0x[a-fA-F0-9]{40}", value) is not None
+
+
+def is_valid_private_key(value: str) -> bool:
+    value = (value or "").strip()
+    if value.lower().startswith("0x"):
+        value = value[2:]
+    return re.fullmatch(r"[a-fA-F0-9]{64}", value) is not None
+
+
+blockchain_audit = None
+
+print("BLOCKCHAIN_ENABLED:", BLOCKCHAIN_ENABLED, flush=True)
+print("GANACHE_RPC_URL:", repr(GANACHE_RPC_URL), flush=True)
+print("BLOCKCHAIN_CONTRACT_ADDRESS:", repr(BLOCKCHAIN_CONTRACT_ADDRESS), flush=True)
+print("BLOCKCHAIN_PRIVATE_KEY_PRESENT:", bool(BLOCKCHAIN_PRIVATE_KEY), flush=True)
+
+if BLOCKCHAIN_ENABLED:
+    if not is_valid_eth_address(BLOCKCHAIN_CONTRACT_ADDRESS):
+        print("BLOCKCHAIN AUDIT CONNECT FAILED: invalid contract address format", flush=True)
+    elif not is_valid_private_key(BLOCKCHAIN_PRIVATE_KEY):
+        print("BLOCKCHAIN AUDIT CONNECT FAILED: invalid private key format", flush=True)
+    else:
+        try:
+            blockchain_audit = BlockchainAuditService(
+                rpc_url=GANACHE_RPC_URL,
+                contract_address=BLOCKCHAIN_CONTRACT_ADDRESS,
+                private_key=BLOCKCHAIN_PRIVATE_KEY,
+            )
+            print("BLOCKCHAIN AUDIT CONNECTED:", True, flush=True)
+        except Exception as exc:
+            blockchain_audit = None
+            print("BLOCKCHAIN AUDIT CONNECT FAILED:", str(exc), flush=True)
+else:
+    print("BLOCKCHAIN AUDIT CONNECTED:", False, flush=True)
 
 app = FastAPI(title="Virtual Support System API (Python - NLP Based)")
 
@@ -72,6 +121,53 @@ async def add_security_headers(request: Request, call_next):
     )
     return response
 
+class GradeSubmissionPayload(BaseModel):
+    score: float
+    feedback: str = ""
+
+class FormQuestionPayload(BaseModel):
+    question: str
+    type: str
+    required: bool = True
+    choices: list[str] = []
+
+
+class CreateFormPayload(BaseModel):
+    kind: str
+    title: str
+    description: str
+    questions: list[FormQuestionPayload]
+
+
+class SubmitFormAnswerPayload(BaseModel):
+    questionId: int
+    answer: str = ""
+
+
+class SubmitFormPayload(BaseModel):
+    answers: list[SubmitFormAnswerPayload]
+
+class FormQuestionPayload(BaseModel):
+    question: str
+    type: str
+    required: bool = True
+    choices: list[str] = []
+
+
+class CreateFormPayload(BaseModel):
+    kind: str
+    title: str
+    description: str
+    questions: list[FormQuestionPayload]
+
+
+class SubmitFormAnswerPayload(BaseModel):
+    questionId: int
+    answer: str = ""
+
+
+class SubmitFormPayload(BaseModel):
+    answers: list[SubmitFormAnswerPayload]
 
 class SignUpPayload(BaseModel):
     fullName: str
@@ -141,6 +237,382 @@ class QuizCreatePayload(BaseModel):
     title: str
     description: str = ""
     quizType: str = "quiz"
+
+def can_monitor_attendance(request: Request) -> bool:
+    user_id = request.session.get("user_id")
+    if not user_id:
+        return False
+    role = str(request.session.get("role", "")).strip().lower()
+    return role == "professor"
+
+
+def can_mark_own_attendance(request: Request) -> bool:
+    user_id = request.session.get("user_id")
+    if not user_id:
+        return False
+    role = str(request.session.get("role", "")).strip().lower()
+    return role == "student"
+
+@app.get("/api/blockchain/proof/{public_id}")
+def get_blockchain_proof(public_id: str, request: Request):
+    print("PROOF ROUTE HIT:", public_id, flush=True)
+
+    user_id = request.session.get("user_id")
+    print("SESSION USER ID:", repr(user_id), flush=True)
+
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    print("BLOCKCHAIN AUDIT OBJECT EXISTS:", blockchain_audit is not None, flush=True)
+
+    if not blockchain_audit:
+        raise HTTPException(status_code=503, detail="Blockchain audit service unavailable.")
+
+    try:
+        print("ABOUT TO CALL get_ticket_proof()", flush=True)
+        proof = blockchain_audit.get_ticket_proof(public_id)
+        print("PROOF RETURNED:", repr(proof), flush=True)
+
+        if not proof:
+            raise HTTPException(status_code=404, detail="No blockchain proof found for this ticket.")
+
+        return {"proof": proof}
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print("BLOCKCHAIN PROOF ERROR:", repr(exc), flush=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Blockchain proof lookup failed: {type(exc).__name__}: {exc}"
+        )
+
+@app.get("/api/attendance/summary")
+def attendance_summary(request: Request, date: str | None = None):
+    if not request.session.get("user_id"):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if not can_monitor_attendance(request):
+        raise HTTPException(status_code=403, detail="Only professors can monitor attendance summary.")
+
+    attendance_date = date or datetime.utcnow().date().isoformat()
+    with get_conn() as conn:
+        return get_attendance_summary(conn, attendance_date)
+
+
+@app.post("/api/attendance/mark")
+def attendance_mark(payload: AttendanceMarkPayload, request: Request):
+    email = request.session.get("email")
+    role = str(request.session.get("role", "")).lower()
+    user_id = request.session.get("user_id")
+
+    if not user_id or not email:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    status = payload.status.strip().lower()
+    attendance_date = payload.date or datetime.utcnow().date().isoformat()
+
+    if role == "student":
+        if status != "present":
+            raise HTTPException(
+                status_code=403,
+                detail="Students can only mark themselves as PRESENT."
+            )
+
+        target_email = email
+
+    elif role == "professor":
+        if status not in ["late", "absent"]:
+            raise HTTPException(
+                status_code=400,
+                detail="Professors can only mark students as LATE or ABSENT."
+            )
+
+        target_email = payload.studentEmail
+
+        if not target_email:
+            raise HTTPException(status_code=400, detail="Student email required.")
+
+    else:
+        raise HTTPException(status_code=403, detail="Attendance not allowed for this role.")
+
+    with get_conn() as conn:
+        upsert_attendance(conn, target_email, attendance_date, status)
+
+        append_audit_event(
+            conn,
+            "attendance_marked",
+            email,
+            {
+                "student": target_email,
+                "date": attendance_date,
+                "status": status,
+            },
+        )
+
+        conn.commit()
+
+    return {
+        "message": "Attendance updated.",
+        "status": status,
+        "date": attendance_date,
+    }
+
+
+@app.get("/api/attendance/today")
+def attendance_today(request: Request, date: str | None = None):
+    user_id = request.session.get("user_id")
+    user_email = str(request.session.get("email") or "").strip().lower()
+    role = str(request.session.get("role") or "").strip().lower()
+
+    if not user_id or not user_email:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    attendance_date = (date or datetime.utcnow().date().isoformat()).strip()
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", attendance_date):
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD.")
+
+    with get_conn() as conn:
+        summary = get_attendance_summary(conn, attendance_date)
+
+        if role == "professor":
+            rows = list_attendance_by_date(conn, attendance_date)
+        elif role == "student":
+            rows = conn.execute(
+                """
+                SELECT
+                  ar.user_email,
+                  ar.status,
+                  ar.created_at,
+                  u.full_name
+                FROM attendance_records ar
+                LEFT JOIN users u ON u.email = ar.user_email
+                WHERE ar.attendance_date = ? AND ar.user_email = ?
+                ORDER BY ar.user_email ASC
+                """,
+                (attendance_date, user_email),
+            ).fetchall()
+        else:
+            raise HTTPException(status_code=403, detail="Attendance is only available for professors and students.")
+
+    return {
+        "date": attendance_date,
+        "summary": summary,
+        "records": [
+            {
+                "fullName": row["full_name"] or "-",
+                "userEmail": row["user_email"],
+                "status": row["status"],
+                "createdAt": row["created_at"],
+            }
+            for row in rows
+        ],
+    }
+
+def make_ticket_hash(
+    public_id: str,
+    user_email: str,
+    subject: str,
+    description: str,
+    priority: str,
+    status: str,
+) -> str:
+    raw = f"{public_id}|{user_email}|{subject}|{description}|{priority}|{status}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+def is_professor_role(request: Request) -> bool:
+    return str(request.session.get("role", "")).strip().lower() == "professor"
+
+
+def is_student_role(request: Request) -> bool:
+    return str(request.session.get("role", "")).strip().lower() == "student"
+
+
+def list_forms_by_kind(conn: sqlite3.Connection, kind: str):
+    return conn.execute(
+        """
+        SELECT id, kind, title, description, created_by_email, created_at
+        FROM forms
+        WHERE kind = ?
+        ORDER BY id DESC
+        """,
+        (kind,),
+    ).fetchall()
+
+
+def get_form_by_id(conn: sqlite3.Connection, form_id: int):
+    return conn.execute(
+        """
+        SELECT id, kind, title, description, created_by_email, created_at
+        FROM forms
+        WHERE id = ?
+        """,
+        (form_id,),
+    ).fetchone()
+
+
+def list_form_questions(conn: sqlite3.Connection, form_id: int):
+    return conn.execute(
+        """
+        SELECT id, form_id, question_text, question_type, is_required, choices_json
+        FROM form_questions
+        WHERE form_id = ?
+        ORDER BY id ASC
+        """,
+        (form_id,),
+    ).fetchall()
+
+
+def create_form_record(
+    conn: sqlite3.Connection,
+    kind: str,
+    title: str,
+    description: str,
+    created_by_email: str,
+    questions: list[FormQuestionPayload],
+) -> dict:
+    created_at = datetime.utcnow().isoformat()
+
+    cur = conn.execute(
+        """
+        INSERT INTO forms (kind, title, description, created_by_email, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (kind, sanitize_text(title, 255), sanitize_text(description, 4000), created_by_email, created_at),
+    )
+
+    form_id = cur.lastrowid
+
+    for question in questions:
+        q_type = str(question.type or "").strip().lower()
+        q_text = sanitize_text(question.question, 2000)
+        choices = question.choices or []
+
+        conn.execute(
+            """
+            INSERT INTO form_questions (form_id, question_text, question_type, is_required, choices_json)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                form_id,
+                q_text,
+                q_type,
+                1 if question.required else 0,
+                json.dumps(choices),
+            ),
+        )
+
+    conn.commit()
+    return {"id": form_id, "createdAt": created_at}
+
+
+def delete_form_record(conn: sqlite3.Connection, form_id: int, professor_email: str) -> bool:
+    form = conn.execute(
+        "SELECT id, created_by_email FROM forms WHERE id = ?",
+        (form_id,),
+    ).fetchone()
+
+    if not form:
+        return False
+
+    if str(form["created_by_email"]).strip().lower() != str(professor_email).strip().lower():
+        return False
+
+    submission_ids = conn.execute(
+        "SELECT id FROM form_submissions WHERE form_id = ?",
+        (form_id,),
+    ).fetchall()
+
+    for row in submission_ids:
+        conn.execute(
+            "DELETE FROM form_submission_answers WHERE submission_id = ?",
+            (row["id"],),
+        )
+
+    conn.execute("DELETE FROM form_submissions WHERE form_id = ?", (form_id,))
+    conn.execute("DELETE FROM form_questions WHERE form_id = ?", (form_id,))
+    conn.execute("DELETE FROM forms WHERE id = ?", (form_id,))
+    conn.commit()
+    return True
+
+
+def create_form_submission(
+    conn: sqlite3.Connection,
+    form_id: int,
+    student_email: str,
+    answers: list[SubmitFormAnswerPayload],
+) -> dict:
+    submitted_at = datetime.utcnow().isoformat()
+
+    cur = conn.execute(
+        """
+        INSERT INTO form_submissions (form_id, student_email, submitted_at)
+        VALUES (?, ?, ?)
+        """,
+        (form_id, student_email, submitted_at),
+    )
+    submission_id = cur.lastrowid
+
+    for answer in answers:
+        conn.execute(
+            """
+            INSERT INTO form_submission_answers (submission_id, question_id, answer_text)
+            VALUES (?, ?, ?)
+            """,
+            (
+                submission_id,
+                int(answer.questionId),
+                sanitize_text(answer.answer or "", 4000),
+            ),
+        )
+
+    conn.commit()
+    return {"submissionId": submission_id, "submittedAt": submitted_at}
+
+
+def list_form_submissions(conn: sqlite3.Connection, form_id: int):
+    submissions = conn.execute(
+        """
+        SELECT id, form_id, student_email, submitted_at
+        FROM form_submissions
+        WHERE form_id = ?
+        ORDER BY id DESC
+        """,
+        (form_id,),
+    ).fetchall()
+
+    out = []
+    for submission in submissions:
+        answers = conn.execute(
+            """
+            SELECT
+              fsa.question_id,
+              fsa.answer_text,
+              fq.question_text
+            FROM form_submission_answers fsa
+            LEFT JOIN form_questions fq ON fq.id = fsa.question_id
+            WHERE fsa.submission_id = ?
+            ORDER BY fsa.id ASC
+            """,
+            (submission["id"],),
+        ).fetchall()
+
+        out.append(
+            {
+                "submissionId": submission["id"],
+                "studentEmail": submission["student_email"],
+                "submittedAt": submission["submitted_at"],
+                "answers": [
+                    {
+                        "questionId": row["question_id"],
+                        "question": row["question_text"] or "-",
+                        "answer": row["answer_text"] or "",
+                    }
+                    for row in answers
+                ],
+            }
+        )
+
+    return out
 
 
 def normalize_email(value: str) -> str:
@@ -385,7 +857,9 @@ def mark_login_mfa_used(conn: sqlite3.Connection, code_id: int) -> None:
 
 def send_login_mfa_email(to_email: str, code: str) -> bool:
     if not SMTP_USER or not SMTP_PASS or not SMTP_FROM:
+        print("SMTP CONFIG MISSING", flush=True)
         return False
+
     msg = EmailMessage()
     msg["Subject"] = "Virtual Support Login Verification Code"
     msg["From"] = SMTP_FROM
@@ -395,10 +869,16 @@ def send_login_mfa_email(to_email: str, code: str) -> bool:
         f"<p>Your login verification code is: <strong>{code}</strong></p><p>It expires in 10 minutes.</p>",
         subtype="html",
     )
-    with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as smtp:
-        smtp.login(SMTP_USER, SMTP_PASS)
-        smtp.send_message(msg)
-    return True
+
+    try:
+        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as smtp:
+            smtp.login(SMTP_USER, SMTP_PASS)
+            smtp.send_message(msg)
+        print("MFA EMAIL SENT TO:", to_email, flush=True)
+        return True
+    except Exception as exc:
+        print("MFA EMAIL FAILED:", str(exc), flush=True)
+        return False
 
 
 def send_signin_alert_email(to_email: str) -> bool:
@@ -978,14 +1458,14 @@ def format_steps(topic: str) -> str:
         f"2. Identify the main parts or process involved.\n"
         f"3. Apply it using a simple example.\n"
         f"4. Review the result and refine your understanding.\n\n"
-        f"If you want, ask me to make it simpler, more detailed, or give an example about {topic}."
+        f"Ask me to make it simpler, more detailed, or give an example about {topic}."
     )
 
 
 def format_definition(topic: str) -> str:
     return (
         f"{topic.capitalize()} is a concept or topic that can be understood by looking at its purpose, main parts, and how it is used in practice.\n\n"
-        f"If you want, I can explain {topic} in a simpler way, give an example, or make it step by step."
+        f"I can explain {topic} in a simpler way, give an example, or make it step by step."
     )
 
 
@@ -999,7 +1479,7 @@ def format_comparison(topic: str) -> str:
             f"Here is a simple comparison between {a} and {b}:\n\n"
             f"- {a}: usually focuses on its own role, features, or purpose.\n"
             f"- {b}: differs in function, structure, or use depending on the context.\n\n"
-            f"If you want, send the exact two terms again and I will compare them more specifically."
+            f"Send the exact two terms again and I will compare them more specifically."
         )
     return "Please send the two things you want me to compare, and I will explain their differences clearly."
 
@@ -1307,16 +1787,93 @@ def get_suggested_replies(message: str, reply: str) -> list[str]:
 
 def init_db() -> None:
     with get_conn() as conn:
+        conn.executescript(
+    """
+
+    
+    CREATE TABLE IF NOT EXISTS activities (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT,
+        description TEXT,
+        created_by TEXT,
+        created_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS questions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        activity_id INTEGER,
+        question TEXT,
+        type TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS answers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        question_id INTEGER,
+        student_email TEXT,
+        answer TEXT,
+        created_at TEXT
+    );
+    """
+)
+        
         conn.execute(
             """
-            CREATE TABLE IF NOT EXISTS users (
+            CREATE TABLE IF NOT EXISTS forms (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
-              full_name TEXT NOT NULL,
-              email TEXT NOT NULL UNIQUE,
-              role TEXT NOT NULL DEFAULT 'student',
-              email_verified INTEGER NOT NULL DEFAULT 0,
-              password_hash TEXT NOT NULL,
+              kind TEXT NOT NULL CHECK(kind IN ('activity','quiz','exam')),
+              title TEXT NOT NULL,
+              description TEXT NOT NULL,
+              created_by_email TEXT NOT NULL,
               created_at TEXT NOT NULL
+            )
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS form_questions (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              form_id INTEGER NOT NULL,
+              question_text TEXT NOT NULL,
+              question_type TEXT NOT NULL CHECK(question_type IN ('short_answer','paragraph','multiple_choice')),
+              is_required INTEGER NOT NULL DEFAULT 1,
+              choices_json TEXT NOT NULL DEFAULT '[]'
+            )
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS form_submissions (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              form_id INTEGER NOT NULL,
+              student_email TEXT NOT NULL,
+              submitted_at TEXT NOT NULL
+            )
+            """
+        )
+
+        submission_cols = conn.execute("PRAGMA table_info(form_submissions)").fetchall()
+
+        if not any(col["name"] == "score" for col in submission_cols):
+            conn.execute("ALTER TABLE form_submissions ADD COLUMN score REAL")
+
+        if not any(col["name"] == "feedback" for col in submission_cols):
+            conn.execute("ALTER TABLE form_submissions ADD COLUMN feedback TEXT")
+
+        if not any(col["name"] == "graded_by_email" for col in submission_cols):
+            conn.execute("ALTER TABLE form_submissions ADD COLUMN graded_by_email TEXT")
+
+        if not any(col["name"] == "graded_at" for col in submission_cols):
+            conn.execute("ALTER TABLE form_submissions ADD COLUMN graded_at TEXT")
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS form_submission_answers (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              submission_id INTEGER NOT NULL,
+              question_id INTEGER NOT NULL,
+              answer_text TEXT NOT NULL
             )
             """
         )
@@ -1448,11 +2005,226 @@ def init_db() -> None:
         )
         conn.commit()
 
+        
+
 
 @app.on_event("startup")
 def startup_event() -> None:
     init_db()
 
+@app.post("/api/activity/create")
+def create_activity(payload: dict, request: Request):
+
+    role = request.session.get("role")
+
+    if role != "professor":
+        raise HTTPException(status_code=403, detail="Professor only.")
+
+    title = payload.get("title")
+    description = payload.get("description")
+    questions = payload.get("questions", [])
+
+    with get_conn() as conn:
+
+        cur = conn.execute(
+            """
+            INSERT INTO activities (title, description, created_by, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                title,
+                description,
+                request.session.get("email"),
+                datetime.utcnow().isoformat(),
+            ),
+        )
+
+        activity_id = cur.lastrowid
+
+        for q in questions:
+            conn.execute(
+                """
+                INSERT INTO questions (activity_id, question, type)
+                VALUES (?, ?, ?)
+                """,
+                (activity_id, q["question"], q["type"]),
+            )
+
+        conn.commit()
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS forms (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              kind TEXT NOT NULL CHECK(kind IN ('activity','quiz','exam')),
+              title TEXT NOT NULL,
+              description TEXT NOT NULL,
+              created_by_email TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            )
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS form_questions (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              form_id INTEGER NOT NULL,
+              question_text TEXT NOT NULL,
+              question_type TEXT NOT NULL CHECK(question_type IN ('short_answer','paragraph','multiple_choice')),
+              is_required INTEGER NOT NULL DEFAULT 1,
+              choices_json TEXT NOT NULL DEFAULT '[]'
+            )
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS form_submissions (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              form_id INTEGER NOT NULL,
+              student_email TEXT NOT NULL,
+              submitted_at TEXT NOT NULL
+            )
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS form_submission_answers (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              submission_id INTEGER NOT NULL,
+              question_id INTEGER NOT NULL,
+              answer_text TEXT NOT NULL
+            )
+            """
+        )
+    return {"message": "Activity created."}
+
+@app.post("/api/activity/submit")
+def submit_activity(payload: dict, request: Request):
+
+    role = request.session.get("role")
+
+    if role != "student":
+        raise HTTPException(status_code=403)
+
+    answers = payload.get("answers", [])
+
+    with get_conn() as conn:
+
+        for a in answers:
+            conn.execute(
+                """
+                INSERT INTO answers
+                (question_id, student_email, answer, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    a["questionId"],
+                    request.session.get("email"),
+                    a["answer"],
+                    datetime.utcnow().isoformat(),
+                ),
+            )
+
+        conn.commit()
+
+    return {"message": "Activity submitted."}
+
+@app.post("/api/auth/signin")
+def signin(payload: SignInPayload, request: Request):
+    email = normalize_email(payload.email)
+    password = payload.password
+
+    if not is_valid_email(email) or len(password) < 8:
+        raise HTTPException(status_code=400, detail="Invalid email or password format.")
+
+    with get_conn() as conn:
+        attempt = get_login_attempt(conn, email)
+        lockout_seconds = get_lockout_seconds(attempt)
+        if lockout_seconds > 0:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Account temporarily locked. Try again in {lockout_seconds} seconds.",
+            )
+
+        user = conn.execute(
+            "SELECT id, email, role, email_verified, password_hash FROM users WHERE email = ?",
+            (email,),
+        ).fetchone()
+
+        if not user:
+            record_failed_login(conn, email)
+            raise HTTPException(status_code=401, detail="Invalid email or password.")
+
+        if not verify_password(password, user["password_hash"]):
+            result = record_failed_login(conn, email)
+            append_audit_event(conn, "signin_failed", email, {"failedAttempts": result["failed"]})
+            if result["lockedUntil"]:
+                retry_after = max(
+                    int((datetime.fromisoformat(result["lockedUntil"]) - datetime.utcnow()).total_seconds()),
+                    0,
+                )
+                append_audit_event(conn, "signin_locked", email, {"retryAfterSeconds": retry_after})
+            conn.commit()
+
+            if result["lockedUntil"]:
+                retry_after = max(
+                    int((datetime.fromisoformat(result["lockedUntil"]) - datetime.utcnow()).total_seconds()),
+                    0,
+                )
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"Account temporarily locked. Try again in {retry_after} seconds.",
+                )
+
+            raise HTTPException(status_code=401, detail="Invalid email or password.")
+
+        clear_login_attempt(conn, email)
+        user_role = str(user["role"] or "student").strip().lower()
+
+        if AUTH_MFA_ENABLED:
+            code = create_login_mfa_code(conn, email)
+
+            email_sent = False
+            if AUTH_MFA_EMAIL_ACTIVE:
+                try:
+                    email_sent = send_login_mfa_email(email, code)
+                except Exception:
+                    email_sent = False
+
+            request.session.clear()
+            request.session["pending_auth"] = {
+                "user_id": user["id"],
+                "email": user["email"],
+                "role": user["role"] or "student",
+                "created_at": datetime.utcnow().isoformat(),
+            }
+
+            append_audit_event(conn, "signin_mfa_challenge", user["email"], {"emailSent": email_sent})
+            conn.commit()
+
+            return {
+                "message": "Enter the 6-digit verification code to complete sign in.",
+                "mfaRequired": True,
+                "emailSent": email_sent,
+                "verificationCode": None if email_sent else code,
+            }
+
+        finalize_signed_in_session(request, user)
+
+        signin_alert_sent = False
+        try:
+            signin_alert_sent = send_signin_alert_email(user["email"])
+        except Exception:
+            signin_alert_sent = False
+
+        append_audit_event(conn, "signin", user["email"], {"userId": user["id"], "role": user["role"] or "student"})
+        append_audit_event(conn, "signin_alert", user["email"], {"emailSent": signin_alert_sent})
+        conn.commit()
+
+    return {"message": "Sign in successful."}
 
 @app.post("/api/auth/signup")
 def signup(payload: SignUpPayload, request: Request):
@@ -1507,97 +2279,43 @@ def signup(payload: SignUpPayload, request: Request):
 
     return {"message": "Account created successfully."}
 
+@app.post("/api/auth/signin/resend-mfa")
+def signin_resend_mfa(request: Request):
+    pending = request.session.get("pending_auth") or {}
+    if not pending or not pending.get("email") or not pending.get("user_id"):
+        raise HTTPException(status_code=400, detail="No pending sign-in. Please sign in again.")
 
-@app.post("/api/auth/signin")
-def signin(payload: SignInPayload, request: Request):
-    email = normalize_email(payload.email)
-    password = payload.password
-
-    if not is_valid_email(email) or len(password) < 8:
-        raise HTTPException(status_code=400, detail="Invalid email or password format.")
+    email = str(pending["email"]).strip().lower()
 
     with get_conn() as conn:
-        attempt = get_login_attempt(conn, email)
-        lockout_seconds = get_lockout_seconds(attempt)
-        if lockout_seconds > 0:
-            raise HTTPException(
-                status_code=429,
-                detail=f"Account temporarily locked. Try again in {lockout_seconds} seconds.",
-            )
         user = conn.execute(
-            "SELECT id, email, role, email_verified, password_hash FROM users WHERE email = ?",
-            (email,),
+            "SELECT id, email, role FROM users WHERE id = ?",
+            (int(pending["user_id"]),),
         ).fetchone()
 
-    if not user:
-        with get_conn() as conn:
-            record_failed_login(conn, email)
-        raise HTTPException(status_code=401, detail="Invalid email or password.")
+        if not user or user["email"] != email:
+            raise HTTPException(status_code=401, detail="User session invalid. Please sign in again.")
 
-    if not verify_password(password, user["password_hash"]):
-        with get_conn() as conn:
-            result = record_failed_login(conn, email)
-            append_audit_event(conn, "signin_failed", email, {"failedAttempts": result["failed"]})
-            if result["lockedUntil"]:
-                retry_after = max(
-                    int((datetime.fromisoformat(result["lockedUntil"]) - datetime.utcnow()).total_seconds()),
-                    0,
-                )
-                append_audit_event(conn, "signin_locked", email, {"retryAfterSeconds": retry_after})
-            conn.commit()
-        if result["lockedUntil"]:
-            retry_after = max(
-                int((datetime.fromisoformat(result["lockedUntil"]) - datetime.utcnow()).total_seconds()),
-                0,
-            )
-            raise HTTPException(
-                status_code=429,
-                detail=f"Account temporarily locked. Try again in {retry_after} seconds.",
-            )
-        raise HTTPException(status_code=401, detail="Invalid email or password.")
-
-    with get_conn() as conn:
-        clear_login_attempt(conn, email)
-        user_role = str(user["role"] or "student").strip().lower()
-
-        if AUTH_MFA_EMAIL_ACTIVE and user_role != "professor":
-            code = create_login_mfa_code(conn, email)
-            email_sent = False
-            try:
-                email_sent = send_login_mfa_email(email, code)
-            except Exception:
-                email_sent = False
-
-            request.session.clear()
-            request.session["pending_auth"] = {
-                "user_id": user["id"],
-                "email": user["email"],
-                "role": user["role"] or "student",
-                "created_at": datetime.utcnow().isoformat(),
-            }
-
-            append_audit_event(conn, "signin_mfa_challenge", user["email"], {"emailSent": email_sent})
-            conn.commit()
-
-            return {
-                "message": "Enter the 6-digit verification code to complete sign in.",
-                "mfaRequired": True,
-                "emailSent": email_sent,
-                "verificationCode": None if email_sent else code,
-            }
-
-        finalize_signed_in_session(request, user)
-        signin_alert_sent = False
+        code = create_login_mfa_code(conn, email)
+        email_sent = False
         try:
-            signin_alert_sent = send_signin_alert_email(user["email"])
+            email_sent = send_login_mfa_email(email, code)
         except Exception:
-            signin_alert_sent = False
+            email_sent = False
 
-        append_audit_event(conn, "signin", user["email"], {"userId": user["id"], "role": user["role"] or "student"})
-        append_audit_event(conn, "signin_alert", user["email"], {"emailSent": signin_alert_sent})
+        append_audit_event(
+            conn,
+            "signin_mfa_resend",
+            email,
+            {"emailSent": email_sent},
+        )
         conn.commit()
 
-    return {"message": "Sign in successful."}
+    return {
+        "message": "A new verification code was sent.",
+        "emailSent": email_sent,
+        "verificationCode": None if email_sent else code,
+    }
 
 
 @app.post("/api/auth/signin/verify-mfa")
@@ -1615,16 +2333,26 @@ def signin_verify_mfa(payload: SignInMfaPayload, request: Request):
         if not valid:
             raise HTTPException(status_code=401, detail="Invalid or expired verification code.")
 
-        mark_login_mfa_used(conn, valid["id"])
+        cur = conn.execute(
+            "UPDATE login_mfa_codes SET used = 1 WHERE id = ? AND used = 0",
+            (valid["id"],)
+        )
+
+        if cur.rowcount != 1:
+            conn.commit()
+            raise HTTPException(status_code=401, detail="Invalid or expired verification code.")
+
         user = conn.execute(
             "SELECT id, email, role FROM users WHERE id = ?",
             (int(pending["user_id"]),),
         ).fetchone()
 
         if not user or user["email"] != pending["email"]:
+            conn.commit()
             raise HTTPException(status_code=401, detail="User session invalid. Please sign in again.")
 
         finalize_signed_in_session(request, user)
+        request.session.pop("pending_auth", None)
 
         signin_alert_sent = False
         try:
@@ -1662,6 +2390,37 @@ def forgot_password(payload: ForgotPasswordPayload, request: Request):
 @app.post("/api/auth/reset-password")
 def reset_password(payload: ResetPasswordPayload):
     raise HTTPException(status_code=404, detail="Forgot password is disabled.")
+
+@app.get("/api/debug/contract-code")
+def debug_contract_code():
+    if not blockchain_audit:
+        return {"connected": False}
+
+    code = blockchain_audit.w3.eth.get_code(
+        Web3.to_checksum_address(BLOCKCHAIN_CONTRACT_ADDRESS)
+    )
+    return {
+        "connected": True,
+        "address": BLOCKCHAIN_CONTRACT_ADDRESS,
+        "codeHex": code.hex(),
+        "codeLength": len(code.hex()),
+    }
+
+@app.get("/api/debug/blockchain")
+def debug_blockchain():
+    
+    return {
+        "enabled": BLOCKCHAIN_ENABLED,
+        "rpc": GANACHE_RPC_URL,
+        "contractAddress": BLOCKCHAIN_CONTRACT_ADDRESS,
+        "hasPrivateKey": bool(BLOCKCHAIN_PRIVATE_KEY),
+        "connected": blockchain_audit is not None,
+    }
+
+clean_pk = BLOCKCHAIN_PRIVATE_KEY[2:] if BLOCKCHAIN_PRIVATE_KEY.lower().startswith("0x") else BLOCKCHAIN_PRIVATE_KEY
+print("BLOCKCHAIN_PRIVATE_KEY_REPR:", repr(BLOCKCHAIN_PRIVATE_KEY), flush=True)
+print("BLOCKCHAIN_PRIVATE_KEY_LEN:", len(clean_pk), flush=True)
+print("BLOCKCHAIN_PRIVATE_KEY_CLEAN:", clean_pk, flush=True)
 
 
 @app.get("/api/auth/me")
@@ -1858,6 +2617,56 @@ def admin_update_ticket_status(ticket_id: str, payload: TicketStatusPayload, req
 
     return {"message": "Ticket status updated."}
 
+@app.delete("/api/admin/users/{user_id}")
+def admin_delete_user(user_id: int, request: Request):
+    admin_email = request.session.get("email", "").strip().lower()
+    admin_role = str(request.session.get("role", "")).strip().lower()
+
+    if admin_role != "administrator" and admin_email != ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Admin access required.")
+
+    if user_id <= 0:
+        raise HTTPException(status_code=400, detail="Invalid user id.")
+
+    with get_conn() as conn:
+        user = conn.execute(
+            """
+            SELECT id, full_name, email, role
+            FROM users
+            WHERE id = ?
+            """,
+            (user_id,),
+        ).fetchone()
+
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found.")
+
+        if str(user["email"]).strip().lower() == admin_email:
+            raise HTTPException(status_code=400, detail="You cannot delete your own signed-in account.")
+
+        conn.execute("DELETE FROM attendance_records WHERE user_email = ?", (user["email"],))
+        conn.execute("DELETE FROM login_attempts WHERE user_email = ?", (user["email"],))
+        conn.execute("DELETE FROM login_mfa_codes WHERE user_email = ?", (user["email"],))
+        conn.execute("DELETE FROM password_reset_tokens WHERE user_email = ?", (user["email"],))
+        conn.execute("DELETE FROM email_verification_codes WHERE user_email = ?", (user["email"],))
+        conn.execute("DELETE FROM user_settings WHERE user_email = ?", (user["email"],))
+        conn.execute("DELETE FROM support_tickets WHERE user_email = ?", (user["email"],))
+        conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+
+        append_audit_event(
+            conn,
+            "admin_user_deleted",
+            admin_email,
+            {
+                "userId": user["id"],
+                "userEmail": user["email"],
+                "fullName": user["full_name"],
+                "role": user["role"] or "student",
+            },
+        )
+        conn.commit()
+
+    return {"message": "User account deleted."}
 
 @app.delete("/api/admin/tickets/{ticket_id}")
 def admin_delete_ticket(ticket_id: str, request: Request):
@@ -1952,6 +2761,704 @@ def attendance_today(request: Request, date: str | None = None):
         ],
     }
 
+@app.get("/api/forms")
+def forms_list(request: Request, kind: str):
+    user_id = request.session.get("user_id")
+    role = str(request.session.get("role", "")).strip().lower()
+
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    kind = str(kind or "").strip().lower()
+    if kind not in ("activity", "quiz", "exam"):
+        raise HTTPException(status_code=400, detail="Invalid form kind.")
+
+    if role not in ("student", "professor"):
+        raise HTTPException(status_code=403, detail="Forms are only available for students and professors.")
+
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, kind, title, description, created_by_email, created_at
+            FROM forms
+            WHERE kind = ?
+            ORDER BY id DESC
+            """,
+            (kind,),
+        ).fetchall()
+
+    return {
+        "forms": [
+            {
+                "id": row["id"],
+                "kind": row["kind"],
+                "title": row["title"],
+                "description": row["description"],
+                "createdByEmail": row["created_by_email"],
+                "createdAt": row["created_at"],
+            }
+            for row in rows
+        ]
+    }
+
+
+@app.post("/api/forms")
+def forms_create(payload: CreateFormPayload, request: Request):
+    user_id = request.session.get("user_id")
+    email = request.session.get("email")
+    role = str(request.session.get("role", "")).strip().lower()
+
+    if not user_id or not email:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if role != "professor":
+        raise HTTPException(status_code=403, detail="Only professors can create forms.")
+
+    kind = str(payload.kind or "").strip().lower()
+    title = str(payload.title or "").strip()
+    description = str(payload.description or "").strip()
+
+    if kind not in ("activity", "quiz", "exam"):
+        raise HTTPException(status_code=400, detail="Invalid form kind.")
+    if not title:
+        raise HTTPException(status_code=400, detail="Title is required.")
+    if not description:
+        raise HTTPException(status_code=400, detail="Description is required.")
+    if not payload.questions:
+        raise HTTPException(status_code=400, detail="At least one question is required.")
+
+    for question in payload.questions:
+        q_type = str(question.type or "").strip().lower()
+        if q_type not in ("short_answer", "paragraph", "multiple_choice"):
+            raise HTTPException(status_code=400, detail="Invalid question type.")
+        if not str(question.question or "").strip():
+            raise HTTPException(status_code=400, detail="Each question must have text.")
+        if q_type == "multiple_choice" and len([c for c in (question.choices or []) if str(c).strip()]) < 2:
+            raise HTTPException(status_code=400, detail="Multiple choice questions need at least 2 choices.")
+
+    created_at = datetime.utcnow().isoformat()
+
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO forms (kind, title, description, created_by_email, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (kind, title, description, email, created_at),
+        )
+        form_id = cur.lastrowid
+
+        for question in payload.questions:
+            conn.execute(
+                """
+                INSERT INTO form_questions (form_id, question_text, question_type, is_required, choices_json)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    form_id,
+                    question.question.strip(),
+                    question.type.strip().lower(),
+                    1 if question.required else 0,
+                    json.dumps(question.choices or []),
+                ),
+            )
+
+        append_audit_event(
+            conn,
+            "form_created",
+            email,
+            {"id": form_id, "kind": kind, "title": title},
+        )
+        conn.commit()
+
+    return {
+        "message": f"{kind.capitalize()} created successfully.",
+        "id": form_id,
+        "createdAt": created_at,
+    }
+
+
+@app.get("/api/forms/{form_id}")
+def forms_detail(form_id: int, request: Request):
+    user_id = request.session.get("user_id")
+    email = str(request.session.get("email") or "").strip().lower()
+    role = str(request.session.get("role", "")).strip().lower()
+
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if role not in ("student", "professor"):
+        raise HTTPException(status_code=403, detail="Forms are only available for students and professors.")
+    if form_id <= 0:
+        raise HTTPException(status_code=400, detail="Invalid form id.")
+
+    with get_conn() as conn:
+        form = conn.execute(
+            """
+            SELECT id, kind, title, description, created_by_email, created_at
+            FROM forms
+            WHERE id = ?
+            """,
+            (form_id,),
+        ).fetchone()
+
+        if not form:
+            raise HTTPException(status_code=404, detail="Form not found.")
+
+        questions = conn.execute(
+            """
+            SELECT id, question_text, question_type, is_required, choices_json
+            FROM form_questions
+            WHERE form_id = ?
+            ORDER BY id ASC
+            """,
+            (form_id,),
+        ).fetchall()
+
+        latest_submission = None
+        if role == "student":
+            latest_submission = conn.execute(
+                """
+                SELECT id, submitted_at, score, feedback, graded_by_email, graded_at
+                FROM form_submissions
+                WHERE form_id = ? AND student_email = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (form_id, email),
+            ).fetchone()
+
+    return {
+        "id": form["id"],
+        "kind": form["kind"],
+        "title": form["title"],
+        "description": form["description"],
+        "createdByEmail": form["created_by_email"],
+        "createdAt": form["created_at"],
+        "questions": [
+            {
+                "id": row["id"],
+                "question": row["question_text"],
+                "type": row["question_type"],
+                "required": int(row["is_required"]) == 1,
+                "choices": json.loads(row["choices_json"] or "[]"),
+            }
+            for row in questions
+        ],
+        "mySubmission": None if not latest_submission else {
+            "submissionId": latest_submission["id"],
+            "submittedAt": latest_submission["submitted_at"],
+            "score": latest_submission["score"],
+            "feedback": latest_submission["feedback"] or "",
+            "gradedByEmail": latest_submission["graded_by_email"],
+            "gradedAt": latest_submission["graded_at"],
+        },
+    }
+
+
+@app.delete("/api/forms/{form_id}")
+def forms_delete(form_id: int, request: Request):
+    user_id = request.session.get("user_id")
+    email = request.session.get("email")
+    role = str(request.session.get("role", "")).strip().lower()
+
+    if not user_id or not email:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if role != "professor":
+        raise HTTPException(status_code=403, detail="Only professors can delete forms.")
+
+    with get_conn() as conn:
+        form = conn.execute(
+            "SELECT id, created_by_email FROM forms WHERE id = ?",
+            (form_id,),
+        ).fetchone()
+
+        if not form:
+            raise HTTPException(status_code=404, detail="Form not found.")
+        if str(form["created_by_email"]).strip().lower() != str(email).strip().lower():
+            raise HTTPException(status_code=403, detail="You can only delete your own form.")
+
+        submission_ids = conn.execute(
+            "SELECT id FROM form_submissions WHERE form_id = ?",
+            (form_id,),
+        ).fetchall()
+
+        for row in submission_ids:
+            conn.execute("DELETE FROM form_submission_answers WHERE submission_id = ?", (row["id"],))
+
+        conn.execute("DELETE FROM form_submissions WHERE form_id = ?", (form_id,))
+        conn.execute("DELETE FROM form_questions WHERE form_id = ?", (form_id,))
+        conn.execute("DELETE FROM forms WHERE id = ?", (form_id,))
+
+        append_audit_event(conn, "form_deleted", email, {"id": form_id})
+        conn.commit()
+
+    return {"message": "Form deleted successfully."}
+
+
+@app.post("/api/forms/{form_id}/submit")
+def forms_submit(form_id: int, payload: SubmitFormPayload, request: Request):
+    user_id = request.session.get("user_id")
+    email = request.session.get("email")
+    role = str(request.session.get("role", "")).strip().lower()
+
+    if not user_id or not email:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if role != "student":
+        raise HTTPException(status_code=403, detail="Only students can submit answers.")
+    if not payload.answers:
+        raise HTTPException(status_code=400, detail="Answers are required.")
+
+    submitted_at = datetime.utcnow().isoformat()
+
+    with get_conn() as conn:
+        form = conn.execute("SELECT id FROM forms WHERE id = ?", (form_id,)).fetchone()
+        if not form:
+            raise HTTPException(status_code=404, detail="Form not found.")
+
+        valid_question_ids = {
+            row["id"]
+            for row in conn.execute(
+                "SELECT id FROM form_questions WHERE form_id = ?",
+                (form_id,),
+            ).fetchall()
+        }
+
+        for answer in payload.answers:
+            if int(answer.questionId) not in valid_question_ids:
+                raise HTTPException(status_code=400, detail="Invalid question id in answers.")
+
+        cur = conn.execute(
+            """
+            INSERT INTO form_submissions (form_id, student_email, submitted_at)
+            VALUES (?, ?, ?)
+            """,
+            (form_id, email, submitted_at),
+        )
+        submission_id = cur.lastrowid
+
+        for answer in payload.answers:
+            conn.execute(
+                """
+                INSERT INTO form_submission_answers (submission_id, question_id, answer_text)
+                VALUES (?, ?, ?)
+                """,
+                (submission_id, int(answer.questionId), str(answer.answer or "").strip()),
+            )
+
+        append_audit_event(
+            conn,
+            "form_submitted",
+            email,
+            {"formId": form_id, "submissionId": submission_id},
+        )
+        conn.commit()
+
+    return {
+        "message": "Answers submitted successfully.",
+        "submissionId": submission_id,
+        "submittedAt": submitted_at,
+    }
+
+
+@app.get("/api/forms/{form_id}/submissions")
+def forms_submissions(form_id: int, request: Request):
+    user_id = request.session.get("user_id")
+    email = request.session.get("email")
+    role = str(request.session.get("role", "")).strip().lower()
+
+    if not user_id or not email:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if role != "professor":
+        raise HTTPException(status_code=403, detail="Only professors can view submissions.")
+
+    with get_conn() as conn:
+        form = conn.execute(
+            """
+            SELECT id, created_by_email
+            FROM forms
+            WHERE id = ?
+            """,
+            (form_id,),
+        ).fetchone()
+
+        if not form:
+            raise HTTPException(status_code=404, detail="Form not found.")
+        if str(form["created_by_email"]).strip().lower() != str(email).strip().lower():
+            raise HTTPException(status_code=403, detail="You can only view submissions for your own forms.")
+
+        submissions = conn.execute(
+            """
+            SELECT id, student_email, submitted_at, score, feedback, graded_by_email, graded_at
+            FROM form_submissions
+            WHERE form_id = ?
+            ORDER BY id DESC
+            """,
+            (form_id,),
+        ).fetchall()
+
+        output = []
+        for submission in submissions:
+            answers = conn.execute(
+                """
+                SELECT
+                  fsa.question_id,
+                  fsa.answer_text,
+                  fq.question_text
+                FROM form_submission_answers fsa
+                LEFT JOIN form_questions fq ON fq.id = fsa.question_id
+                WHERE fsa.submission_id = ?
+                ORDER BY fsa.id ASC
+                """,
+                (submission["id"],),
+            ).fetchall()
+
+            output.append(
+                {
+                    "submissionId": submission["id"],
+                    "studentEmail": submission["student_email"],
+                    "submittedAt": submission["submitted_at"],
+                    "score": submission["score"],
+                    "feedback": submission["feedback"] or "",
+                    "gradedByEmail": submission["graded_by_email"],
+                    "gradedAt": submission["graded_at"],
+                    "answers": [
+                        {
+                            "questionId": row["question_id"],
+                            "question": row["question_text"] or "-",
+                            "answer": row["answer_text"] or "",
+                        }
+                        for row in answers
+                    ],
+                }
+            )
+
+    return {"submissions": output}
+
+@app.patch("/api/forms/submissions/{submission_id}/grade")
+def grade_form_submission(submission_id: int, payload: GradeSubmissionPayload, request: Request):
+    user_id = request.session.get("user_id")
+    email = request.session.get("email")
+    role = str(request.session.get("role", "")).strip().lower()
+
+    if not user_id or not email:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if role != "professor":
+        raise HTTPException(status_code=403, detail="Only professors can grade submissions.")
+    if submission_id <= 0:
+        raise HTTPException(status_code=400, detail="Invalid submission id.")
+    if payload.score < 0:
+        raise HTTPException(status_code=400, detail="Score cannot be negative.")
+
+    graded_at = datetime.utcnow().isoformat()
+
+    with get_conn() as conn:
+        submission = conn.execute(
+            """
+            SELECT
+              fs.id,
+              fs.form_id,
+              f.created_by_email
+            FROM form_submissions fs
+            LEFT JOIN forms f ON f.id = fs.form_id
+            WHERE fs.id = ?
+            """,
+            (submission_id,),
+        ).fetchone()
+
+        if not submission:
+            raise HTTPException(status_code=404, detail="Submission not found.")
+
+        if str(submission["created_by_email"]).strip().lower() != str(email).strip().lower():
+            raise HTTPException(status_code=403, detail="You can only grade submissions for your own forms.")
+
+        conn.execute(
+            """
+            UPDATE form_submissions
+            SET score = ?, feedback = ?, graded_by_email = ?, graded_at = ?
+            WHERE id = ?
+            """,
+            (
+                float(payload.score),
+                sanitize_text(payload.feedback or "", 4000),
+                email,
+                graded_at,
+                submission_id,
+            ),
+        )
+
+        append_audit_event(
+            conn,
+            "form_submission_graded",
+            email,
+            {
+                "submissionId": submission_id,
+                "formId": submission["form_id"],
+                "score": float(payload.score),
+            },
+        )
+        conn.commit()
+
+    return {
+        "message": "Submission graded successfully.",
+        "submissionId": submission_id,
+        "score": float(payload.score),
+        "gradedAt": graded_at,
+    }
+
+@app.get("/api/forms")
+def forms_list(request: Request, kind: str):
+    user_id = request.session.get("user_id")
+    role = str(request.session.get("role", "")).strip().lower()
+
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    kind = str(kind or "").strip().lower()
+    if kind not in ("activity", "quiz", "exam"):
+        raise HTTPException(status_code=400, detail="Invalid form kind.")
+
+    if role not in ("student", "professor"):
+        raise HTTPException(status_code=403, detail="Forms are only available for students and professors.")
+
+    with get_conn() as conn:
+        rows = list_forms_by_kind(conn, kind)
+
+    return {
+        "forms": [
+            {
+                "id": row["id"],
+                "kind": row["kind"],
+                "title": row["title"],
+                "description": row["description"],
+                "createdByEmail": row["created_by_email"],
+                "createdAt": row["created_at"],
+            }
+            for row in rows
+        ]
+    }
+
+
+@app.post("/api/forms")
+def forms_create(payload: CreateFormPayload, request: Request):
+    user_id = request.session.get("user_id")
+    email = request.session.get("email")
+
+    if not user_id or not email:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    if not is_professor_role(request):
+        raise HTTPException(status_code=403, detail="Only professors can create forms.")
+
+    kind = str(payload.kind or "").strip().lower()
+    title = str(payload.title or "").strip()
+    description = str(payload.description or "").strip()
+
+    if kind not in ("activity", "quiz", "exam"):
+        raise HTTPException(status_code=400, detail="Invalid form kind.")
+    if not title:
+        raise HTTPException(status_code=400, detail="Title is required.")
+    if not description:
+        raise HTTPException(status_code=400, detail="Description is required.")
+    if not payload.questions:
+        raise HTTPException(status_code=400, detail="At least one question is required.")
+
+    for question in payload.questions:
+        q_type = str(question.type or "").strip().lower()
+        if q_type not in ("short_answer", "paragraph", "multiple_choice"):
+            raise HTTPException(status_code=400, detail="Invalid question type.")
+        if not str(question.question or "").strip():
+            raise HTTPException(status_code=400, detail="Each question must have text.")
+        if q_type == "multiple_choice" and len([c for c in (question.choices or []) if str(c).strip()]) < 2:
+            raise HTTPException(status_code=400, detail="Multiple choice questions need at least 2 choices.")
+
+    with get_conn() as conn:
+        result = create_form_record(conn, kind, title, description, email, payload.questions)
+        append_audit_event(
+            conn,
+            "form_created",
+            email,
+            {"id": result["id"], "kind": kind, "title": title},
+        )
+        conn.commit()
+
+    return {
+        "message": f"{kind.capitalize()} created successfully.",
+        "id": result["id"],
+        "createdAt": result["createdAt"],
+    }
+
+
+@app.get("/api/forms/{form_id}")
+def forms_detail(form_id: int, request: Request):
+    user_id = request.session.get("user_id")
+    email = str(request.session.get("email") or "").strip().lower()
+    role = str(request.session.get("role", "")).strip().lower()
+
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if role not in ("student", "professor"):
+        raise HTTPException(status_code=403, detail="Forms are only available for students and professors.")
+    if form_id <= 0:
+        raise HTTPException(status_code=400, detail="Invalid form id.")
+
+    with get_conn() as conn:
+        form = conn.execute(
+            """
+            SELECT id, kind, title, description, created_by_email, created_at
+            FROM forms
+            WHERE id = ?
+            """,
+            (form_id,),
+        ).fetchone()
+
+        if not form:
+            raise HTTPException(status_code=404, detail="Form not found.")
+
+        questions = conn.execute(
+            """
+            SELECT id, question_text, question_type, is_required, choices_json
+            FROM form_questions
+            WHERE form_id = ?
+            ORDER BY id ASC
+            """,
+            (form_id,),
+        ).fetchall()
+
+        latest_submission = None
+        if role == "student":
+            latest_submission = conn.execute(
+                """
+                SELECT id, submitted_at, score, feedback, graded_by_email, graded_at
+                FROM form_submissions
+                WHERE form_id = ? AND student_email = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (form_id, email),
+            ).fetchone()
+
+    return {
+        "id": form["id"],
+        "kind": form["kind"],
+        "title": form["title"],
+        "description": form["description"],
+        "createdByEmail": form["created_by_email"],
+        "createdAt": form["created_at"],
+        "questions": [
+            {
+                "id": row["id"],
+                "question": row["question_text"],
+                "type": row["question_type"],
+                "required": int(row["is_required"]) == 1,
+                "choices": json.loads(row["choices_json"] or "[]"),
+            }
+            for row in questions
+        ],
+        "mySubmission": None if not latest_submission else {
+            "submissionId": latest_submission["id"],
+            "submittedAt": latest_submission["submitted_at"],
+            "score": latest_submission["score"],
+            "feedback": latest_submission["feedback"] or "",
+            "gradedByEmail": latest_submission["graded_by_email"],
+            "gradedAt": latest_submission["graded_at"],
+        },
+    }
+
+
+@app.delete("/api/forms/{form_id}")
+def forms_delete(form_id: int, request: Request):
+    user_id = request.session.get("user_id")
+    email = request.session.get("email")
+
+    if not user_id or not email:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if not is_professor_role(request):
+        raise HTTPException(status_code=403, detail="Only professors can delete forms.")
+    if form_id <= 0:
+        raise HTTPException(status_code=400, detail="Invalid form id.")
+
+    with get_conn() as conn:
+        deleted = delete_form_record(conn, form_id, email)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Form not found or you can only delete your own form.")
+
+        append_audit_event(
+            conn,
+            "form_deleted",
+            email,
+            {"id": form_id},
+        )
+        conn.commit()
+
+    return {"message": "Form deleted successfully."}
+
+
+@app.post("/api/forms/{form_id}/submit")
+def forms_submit(form_id: int, payload: SubmitFormPayload, request: Request):
+    user_id = request.session.get("user_id")
+    email = request.session.get("email")
+
+    if not user_id or not email:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if not is_student_role(request):
+        raise HTTPException(status_code=403, detail="Only students can submit answers.")
+    if form_id <= 0:
+        raise HTTPException(status_code=400, detail="Invalid form id.")
+    if not payload.answers:
+        raise HTTPException(status_code=400, detail="Answers are required.")
+
+    with get_conn() as conn:
+        form = get_form_by_id(conn, form_id)
+        if not form:
+            raise HTTPException(status_code=404, detail="Form not found.")
+
+        valid_question_ids = {
+            row["id"] for row in list_form_questions(conn, form_id)
+        }
+
+        for answer in payload.answers:
+            if int(answer.questionId) not in valid_question_ids:
+                raise HTTPException(status_code=400, detail="Answer contains an invalid question id.")
+
+        result = create_form_submission(conn, form_id, email, payload.answers)
+
+        append_audit_event(
+            conn,
+            "form_submitted",
+            email,
+            {"formId": form_id, "submissionId": result["submissionId"]},
+        )
+        conn.commit()
+
+    return {
+        "message": "Answers submitted successfully.",
+        "submissionId": result["submissionId"],
+        "submittedAt": result["submittedAt"],
+    }
+
+
+@app.get("/api/forms/{form_id}/submissions")
+def forms_submissions(form_id: int, request: Request):
+    user_id = request.session.get("user_id")
+    email = request.session.get("email")
+
+    if not user_id or not email:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if not is_professor_role(request):
+        raise HTTPException(status_code=403, detail="Only professors can view submissions.")
+    if form_id <= 0:
+        raise HTTPException(status_code=400, detail="Invalid form id.")
+
+    with get_conn() as conn:
+        form = get_form_by_id(conn, form_id)
+        if not form:
+            raise HTTPException(status_code=404, detail="Form not found.")
+
+        if str(form["created_by_email"]).strip().lower() != str(email).strip().lower():
+            raise HTTPException(status_code=403, detail="You can only view submissions for your own forms.")
+
+        submissions = list_form_submissions(conn, form_id)
+
+    return {"submissions": submissions}
 
 @app.get("/api/material")
 def material_list(request: Request):
@@ -2184,33 +3691,56 @@ def set_notifications_setting(payload: NotificationSettingPayload, request: Requ
 def create_ticket_api(payload: CreateTicketPayload, request: Request):
     email = request.session.get("email")
     user_id = request.session.get("user_id")
+
     if not user_id or not email:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     subject = sanitize_text(payload.subject, 160)
     description = sanitize_text(payload.description, 2000)
+
     requested_priority = (payload.priority or "").strip().lower()
     inferred_priority = categorize_ticket_priority(subject, description)
     priority = requested_priority if requested_priority in ("low", "medium", "high") else inferred_priority
 
     if len(subject) < 4:
         raise HTTPException(status_code=400, detail="Subject must be at least 4 characters.")
+
     if len(description) < 10:
         raise HTTPException(status_code=400, detail="Description must be at least 10 characters.")
+
     if priority not in ("low", "medium", "high"):
         raise HTTPException(status_code=400, detail="Invalid priority value.")
 
     with get_conn() as conn:
         ticket_id = create_ticket(conn, email, subject, description, priority)
-        append_audit_event(conn, "ticket_created", email, {"ticketId": ticket_id, "priority": priority})
-        conn.commit()
+        blockchain_result = None
+        blockchain_error = None
 
-    return {
-        "message": "Ticket created successfully.",
-        "ticketId": ticket_id,
-        "priority": priority,
-        "categorizedBy": "manual" if requested_priority in ("low", "medium", "high") else "system",
-    }
+        if blockchain_audit:
+            try:
+                ticket_hash = make_ticket_hash(
+                    ticket_id,
+                    email,
+                    subject,
+                    description,
+                    priority,
+                    "open"
+                )
+
+                print("BLOCKCHAIN CREATE START", flush=True)
+                print("TICKET ID:", ticket_id, flush=True)
+                print("TICKET HASH:", ticket_hash, flush=True)
+
+                blockchain_result = blockchain_audit.create_ticket_proof(
+                    ticket_id,
+                    ticket_hash
+                )
+
+                print("BLOCKCHAIN CREATE RESULT:", repr(blockchain_result), flush=True)
+
+            except Exception as exc:
+                blockchain_error = str(exc)
+                print("BLOCKCHAIN CREATE ERROR:", repr(exc), flush=True)
 
 
 @app.get("/api/tickets/my")
@@ -2268,6 +3798,35 @@ def update_ticket_status_api(ticket_id: str, payload: TicketStatusPayload, reque
         conn.commit()
 
     return {"message": "Ticket status updated."}
+
+
+@app.get("/api/blockchain/proof/{public_id}")
+def get_blockchain_proof(public_id: str, request: Request):
+    user_id = request.session.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    if not blockchain_audit:
+        raise HTTPException(status_code=503, detail="Blockchain audit service unavailable.")
+
+    try:
+        print("LOOKING UP BLOCKCHAIN PROOF FOR:", public_id, flush=True)
+        proof = blockchain_audit.get_ticket_proof(public_id)
+        print("BLOCKCHAIN PROOF RESULT:", repr(proof), flush=True)
+
+        if not proof:
+            raise HTTPException(status_code=404, detail="No blockchain proof found for this ticket.")
+
+        return {"proof": proof}
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print("BLOCKCHAIN PROOF ERROR:", repr(exc), flush=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Blockchain proof lookup failed. Check contract deployment, ABI, and ticket proof data."
+        )
 
 
 @app.get("/api/blockchain/ticker")
@@ -2333,13 +3892,6 @@ async def chat(payload: ChatPayload, request: Request):
         "history": request.session["chat_history"],
         "source": source,
         "role": user_role,
-        "suggestions": get_suggested_replies(message, reply),
-    }
-
-    return {
-        "reply": reply,
-        "history": request.session["chat_history"],
-        "source": source,
         "suggestions": get_suggested_replies(message, reply),
     }
 

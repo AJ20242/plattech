@@ -222,7 +222,9 @@ body {
 
 .form-carousel {
   position: relative;
-  min-height: 0;
+  min-height: 620px;
+  perspective: 1200px;
+  overflow: visible;
   transition: height 420ms cubic-bezier(0.22, 0.61, 0.36, 1);
 }
 
@@ -232,32 +234,113 @@ body {
   left: 0;
   width: 100%;
   display: grid;
-  align-content: center;
+  align-content: start;
   gap: 18px;
-  transform: translate3d(100%, 0, 0);
   opacity: 0;
   pointer-events: none;
-  transition: transform 440ms cubic-bezier(0.22, 0.61, 0.36, 1), opacity 300ms ease;
-  will-change: transform, opacity;
+  transform: translateX(48px) scale(0.985);
+  filter: blur(6px);
+  transition:
+    transform 420ms cubic-bezier(0.22, 0.61, 0.36, 1),
+    opacity 280ms ease,
+    filter 280ms ease;
+  will-change: transform, opacity, filter;
   backface-visibility: hidden;
 }
 
 .form-card.is-active {
-  transform: translate3d(0, 0, 0);
   opacity: 1;
   pointer-events: auto;
+  transform: translateX(0) scale(1);
+  filter: blur(0);
+  z-index: 2;
 }
 
 .form-card.slide-left {
-  transform: translate3d(-100%, 0, 0);
+  opacity: 0;
+  transform: translateX(-72px) scale(0.975);
+  filter: blur(8px);
+  z-index: 1;
 }
 
 .form-card.slide-right {
-  transform: translate3d(100%, 0, 0);
+  opacity: 0;
+  transform: translateX(72px) scale(0.975);
+  filter: blur(8px);
+  z-index: 1;
 }
 
 .form-card.pre-left {
-  transform: translate3d(-100%, 0, 0);
+  opacity: 0;
+  transform: translateX(-72px) scale(0.975);
+  filter: blur(8px);
+}
+
+.form-card h2,
+.form-card .form-copy,
+.form-card form,
+.form-card .switch-text,
+.form-card .mfa-card {
+  animation: contentLift 420ms ease;
+}
+
+.mfa-card {
+  animation: mfaPop 320ms cubic-bezier(0.22, 0.61, 0.36, 1);
+  transform-origin: top center;
+}
+
+@keyframes mfaPop {
+  from {
+    opacity: 0;
+    transform: translateY(-10px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes contentLift {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.auth-tab,
+.primary-btn,
+.ghost-btn,
+.secondary-btn,
+.link-btn,
+.toggle-password,
+.theme-icon-btn {
+  transition:
+    transform 180ms ease,
+    box-shadow 180ms ease,
+    background-color 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease,
+    opacity 180ms ease;
+}
+
+.auth-tab:hover,
+.primary-btn:hover,
+.ghost-btn:hover,
+.secondary-btn:hover,
+.theme-icon-btn:hover {
+  transform: translateY(-1px);
+}
+
+.auth-tab:active,
+.primary-btn:active,
+.ghost-btn:active,
+.secondary-btn:active,
+.theme-icon-btn:active {
+  transform: translateY(0);
 }
 
 h2 {
@@ -556,12 +639,19 @@ button:focus-visible {
   }
   
   .mfa-actions {
-    display: flex;
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
     gap: 10px;
   }
   
   .mfa-actions button {
-    flex: 1;
+    width: 100%;
+  }
+  
+  @media (max-width: 640px) {
+    .mfa-actions {
+      grid-template-columns: 1fr;
+    }
   }
   
   .secondary-btn {
@@ -571,9 +661,9 @@ button:focus-visible {
   }
   
   .secondary-btn:hover {
-    background: rgba(0, 0, 0, 0.04);
+    background: rgba(0,0,0,0.04);
   }
   
   [data-theme="dark"] .secondary-btn:hover {
-    background: rgba(255, 255, 255, 0.06);
+    background: rgba(255,255,255,0.06);
   }
