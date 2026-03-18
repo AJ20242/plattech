@@ -1,0 +1,220 @@
+:root {
+  --bg: #eef1ec;
+  --text: #0f1722;
+  --muted: #546072;
+  --card: #ffffff;
+  --border: #d6dde6;
+  --primary: #1e6b5d;
+  --shadow: 0 16px 36px rgba(16, 19, 25, 0.14);
+}
+
+[data-theme="dark"] {
+  --bg: #0f141c;
+  --text: #e8eef6;
+  --muted: #9caec2;
+  --card: #121d28;
+  --border: #304253;
+  --primary: #2e9b86;
+  --shadow: 0 16px 36px rgba(5, 10, 14, 0.5);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: "Space Grotesk", sans-serif;
+  color: var(--text);
+  background: radial-gradient(circle at 10% 10%, #fcf9f2 0%, transparent 36%),
+    radial-gradient(circle at 86% 18%, #def3ec 0%, transparent 42%),
+    var(--bg);
+}
+
+.topbar {
+  max-width: 1100px;
+  margin: 18px auto 0;
+  padding: 12px 18px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.topbar-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.brand { font-weight: 700; }
+
+.nav-link,
+.logout-btn {
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 8px 12px;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.icon-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+  display: grid;
+  place-items: center;
+  padding: 0;
+  cursor: pointer;
+}
+
+.icon-btn svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+
+.tickets-shell {
+  max-width: 1100px;
+  margin: 18px auto 32px;
+  padding: 0 8px;
+  display: grid;
+  gap: 14px;
+}
+
+.ticket-form-card,
+.ticket-list-card,
+.ticker-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 16px;
+  box-shadow: var(--shadow);
+}
+
+.ticket-form {
+  display: grid;
+  gap: 10px;
+}
+
+.ticket-form label {
+  display: grid;
+  gap: 6px;
+  font-size: 0.9rem;
+}
+
+input, textarea, select {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 11px;
+  font: inherit;
+  background: var(--card);
+  color: var(--text);
+}
+
+.ticket-form button {
+  border: 0;
+  border-radius: 10px;
+  padding: 10px 13px;
+  color: #fff;
+  background: linear-gradient(135deg, var(--primary) 0%, #2f8b79 100%);
+  cursor: pointer;
+}
+
+.form-msg {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.ticket-list,
+.ticker-list {
+  display: grid;
+  gap: 8px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.ticket-item,
+.ticker-item {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px;
+}
+
+.ticket-item h3 {
+  margin: 0 0 4px;
+  font-size: 1rem;
+}
+
+.ticket-meta,
+.ticker-meta {
+  margin: 4px 0 0;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.status-row {
+  margin-top: 8px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.status-row button {
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+  border-radius: 9px;
+  padding: 6px 9px;
+  cursor: pointer;
+}
+
+.ticker-item code {
+  font-size: 0.74rem;
+  overflow-wrap: anywhere;
+}
+
+.verify-btn {
+  margin-left: 8px;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 6px;
+  background: #22c55e;
+  color: white;
+  cursor: pointer;
+}
+
+.verify-btn:hover {
+  background: #16a34a;
+}
+
+#blockchainProofModal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 9999;
+}
+
+#blockchainProofModal.hidden {
+  display: none;
+}
+
+.proof-card {
+  background: white;
+  color: black;
+  padding: 24px;
+  border-radius: 12px;
+  width: min(420px, 92%);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+}

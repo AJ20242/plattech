@@ -1,0 +1,6 @@
+Question,Expected,Actual,Score
+How do I create a support ticket?,User fills out form with subject description and submits ticket,Submit a ticket form with subject and description,0.5698
+What is blockchain verification?,System stores ticket hash in blockchain to ensure integrity,Ticket hash is stored in blockchain for security,0.3113
+Why is MFA required?,Multi factor authentication improves account security,MFA adds extra security layer to login,0.0846
+How do I verify a ticket?,User clicks verify and system checks blockchain record,System verifies ticket using blockchain hash,0.1708
+What happens if OTP is wrong?,System rejects login and limits attempts,Invalid OTP is rejected and retry is limited,0.07

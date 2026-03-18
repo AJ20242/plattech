@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Support Tickets</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="tickets.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Ticket Center</div>
+
+    <div class="topbar-actions">
+      <a class="nav-link" href="dashboard.html">Dashboard</a>
+      <a class="nav-link material-link" href="material.html">Material</a>
+      <a class="nav-link" href="chat.html">AI NLP Chat</a>
+
+      <button id="themeToggle" class="icon-btn" type="button" aria-label="Enable dark mode" title="Toggle theme">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M14.5 3.5a8.5 8.5 0 1 0 6 14.5 9 9 0 1 1-6-14.5z"></path>
+        </svg>
+      </button>
+
+      <button id="logoutBtn" class="logout-btn" type="button">Log out</button>
+    </div>
+  </header>
+
+  <main class="tickets-shell">
+    <section class="ticket-form-card">
+      <h1>Create Ticket</h1>
+      <p id="formMsg" class="form-msg"></p>
+
+      <form id="ticketForm" class="ticket-form">
+        <label>
+          Subject
+          <input id="subjectInput" type="text" placeholder="e.g. Unable to access dashboard after sign in" required />
+        </label>
+
+        <label>
+          Description
+          <textarea id="descriptionInput" rows="4" placeholder="Describe the issue..." required></textarea>
+        </label>
+
+        <label>
+          Priority
+          <select id="priorityInput">
+            <option value="low">Low</option>
+            <option value="medium" selected>Medium</option>
+            <option value="high">High</option>
+          </select>
+        </label>
+
+        <button id="createTicketBtn" type="submit">Create Ticket</button>
+      </form>
+    </section>
+
+    <section class="ticket-list-card">
+      <h2>My Tickets</h2>
+      <div id="ticketList" class="ticket-list"></div>
+    </section>
+
+    <section class="ticker-card">
+      <h2>Blockchain Ticker</h2>
+      <p class="ticker-sub">Latest chain events for ticket and auth actions.</p>
+      <div id="tickerList" class="ticker-list"></div>
+    </section>
+  </main>
+
+  <div id="blockchainProofModal" class="hidden">
+    <div class="proof-card">
+      <h3>Blockchain Verification</h3>
+      <p><strong>Ticket ID:</strong> <span id="proofTicket"></span></p>
+      <p><strong>Hash:</strong> <span id="proofHash"></span></p>
+      <p><strong>Timestamp:</strong> <span id="proofTime"></span></p>
+      <button id="closeProof" type="button">Close</button>
+    </div>
+  </div>
+
+  <script src="tickets.js?v=999"></script>
+  <script src="role-ui.js"></script>
+</body>
+</html>

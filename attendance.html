@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Attendance</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="attendance.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Attendance Center</div>
+    <div class="topbar-actions">
+      <a class="nav-link" href="dashboard.html">Dashboard</a>
+      <a class="nav-link" href="tickets.html">Tickets</a>
+      <a class="nav-link material-link" href="material.html">Material</a>
+      <a class="nav-link" href="chat.html">AI NLP Chat</a>
+      <button id="themeToggle" class="icon-btn" type="button" aria-label="Enable dark mode" title="Toggle theme">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M14.5 3.5a8.5 8.5 0 1 0 6 14.5 9 9 0 1 1-6-14.5z"></path>
+        </svg>
+      </button>
+      <button id="logoutBtn" class="logout-btn" type="button">Log out</button>
+    </div>
+  </header>
+
+  <main class="attendance-shell">
+    <section class="attendance-form-card">
+      <h1>Mark Attendance</h1>
+      <p id="userBadge" class="muted">Loading session...</p>
+      <p id="attendanceMsg" class="form-msg" aria-live="polite"></p>
+      <form id="attendanceForm" class="attendance-form">
+        <label>
+          Date
+          <input id="attendanceDate" type="date" required />
+        </label>
+        <label>
+          Status
+          <select id="attendanceStatus" required>
+            <option value="present" selected>Present</option>
+            <option value="late">Late</option>
+            <option value="absent">Absent</option>
+          </select>
+        </label>
+        <button id="attendanceSubmitBtn" type="submit">Save Attendance</button>
+      </form>
+    </section>
+
+    <section class="summary-card">
+      <h2>Daily Summary</h2>
+      <div class="summary-grid">
+        <article class="summary-item">
+          <p class="label">Total</p>
+          <p id="totalStudents" class="value">0</p>
+        </article>
+        <article class="summary-item">
+          <p class="label">Present</p>
+          <p id="presentCount" class="value">0</p>
+        </article>
+        <article class="summary-item">
+          <p class="label">Late</p>
+          <p id="lateCount" class="value">0</p>
+        </article>
+        <article class="summary-item">
+          <p class="label">Absent</p>
+          <p id="absentCount" class="value">0</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="records-card">
+      <h2>Attendance Records</h2>
+      <div id="recordsList" class="records-list"></div>
+    </section>
+  </main>
+
+  <script src="attendance.js"></script>
+  <script src="role-ui.js"></script>
+</body>
+</html>

@@ -1,0 +1,4 @@
+fastapi==0.116.1
+uvicorn==0.35.0
+itsdangerous==2.2.0
+web3==6.20.0

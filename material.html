@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Material & Activities</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="material.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Material & Activities</div>
+    <div class="topbar-actions">
+      <a class="nav-link" href="dashboard.html">Dashboard</a>
+      <a class="nav-link" href="tickets.html">Tickets</a>
+      <a class="nav-link" href="attendance.html">Attendance</a>
+      <a class="nav-link" href="chat.html">AI NLP Chat</a>
+      <button id="themeToggle" class="icon-btn" type="button" aria-label="Enable dark mode" title="Toggle theme">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M14.5 3.5a8.5 8.5 0 1 0 6 14.5 9 9 0 1 1-6-14.5z"></path>
+        </svg>
+      </button>
+      <button id="logoutBtn" class="logout-btn" type="button">Log out</button>
+    </div>
+  </header>
+
+  <main class="material-shell">
+    <section class="hero-card">
+      <h1>Forms Workspace</h1>
+      <p id="userBadge" class="muted">Loading session...</p>
+      <p id="pageMessage" class="form-msg" aria-live="polite"></p>
+    </section>
+
+    <section class="type-tabs">
+      <button class="type-tab is-active" type="button" data-kind="activity">Activities</button>
+      <button class="type-tab" type="button" data-kind="quiz">Quizzes</button>
+      <button class="type-tab" type="button" data-kind="exam">Exams</button>
+    </section>
+
+    <section class="subject-filter">
+      <label for="subjectSelect">Subject:</label>
+      <select id="subjectSelect" class="professor-only">
+        <option value="">All Subjects</option>
+        <option value="Platform Technologies">Platform Technologies</option>
+        <option value="System Administration and Maintenance">System Administration and Maintenance</option>
+        <option value="Information Assurance and Security 2">Information Assurance and Security 2</option>
+        <option value="Intelligent Systems">Intelligent Systems</option>
+      </select>
+    </section>
+
+    <section id="professorBuilderCard" class="panel-card hidden">
+      <div class="panel-head">
+        <h2 id="builderTitle">Create Activity</h2>
+        <p>Build a form with questions like Google Forms.</p>
+      </div>
+
+      <form id="builderForm" class="builder-form">
+        <label>
+          Title
+          <input id="formTitle" type="text" placeholder="e.g. Week 1 Reflection" required />
+        </label>
+
+        <label>
+          Description / Instructions
+          <textarea id="formDescription" rows="4" placeholder="Give instructions for students..." required></textarea>
+        </label>
+
+        <div class="question-toolbar">
+          <button id="addShortAnswerBtn" class="secondary-btn" type="button">Add Short Answer</button>
+          <button id="addParagraphBtn" class="secondary-btn" type="button">Add Paragraph</button>
+          <button id="addMultipleChoiceBtn" class="secondary-btn" type="button">Add Multiple Choice</button>
+        </div>
+
+        <div id="builderQuestions" class="builder-questions"></div>
+
+        <div class="builder-actions">
+          <button id="saveFormBtn" class="primary-btn" type="submit">Publish Form</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="content-grid">
+      <article class="panel-card">
+        <div class="panel-head">
+          <h2 id="listTitle">Published Activities</h2>
+          <p id="listHint">Open an item to view details or answer it.</p>
+        </div>
+        <div id="formsList" class="forms-list"></div>
+      </article>
+
+      <article class="panel-card">
+        <div class="panel-head">
+          <h2 id="detailTitle">Form Details</h2>
+          <p id="detailHint">Select an item from the list.</p>
+        </div>
+
+        <div id="emptyDetail" class="empty-state">
+          Select an activity, quiz, or exam to continue.
+        </div>
+
+        <section id="detailCard" class="detail-card hidden">
+          <div class="detail-meta">
+            <h3 id="detailFormTitle">-</h3>
+            <p id="detailDescription" class="muted">-</p>
+            <p id="detailCreatedMeta" class="muted">-</p>
+          </div>
+          
+          <section id="studentScorePanel" class="student-score-panel hidden">
+            <h4>Your Result</h4>
+            <div class="score-grid">
+              <article class="score-box">
+                <p class="score-label">Score</p>
+                <p id="studentScoreValue" class="score-value">-</p>
+              </article>
+              <article class="score-box">
+                <p class="score-label">Submitted</p>
+                <p id="studentSubmittedAt" class="score-meta">-</p>
+              </article>
+              <article class="score-box">
+                <p class="score-label">Graded</p>
+                <p id="studentGradedAt" class="score-meta">-</p>
+              </article>
+            </div>
+            <div class="score-feedback-box">
+              <p class="score-label">Feedback</p>
+              <p id="studentFeedbackText" class="score-feedback">No feedback yet.</p>
+            </div>
+          </section>
+
+          <form id="studentAnswerForm" class="answer-form hidden"></form>
+
+          <section id="professorSubmissionPanel" class="submissions-panel hidden">
+            <h4>Student Submissions</h4>
+            <div id="submissionsList" class="submissions-list"></div>
+          </section>
+        </section>
+      </article>
+    </section>
+  </main>
+
+  <template id="questionTemplate">
+    <article class="question-builder-card">
+      <div class="question-builder-head">
+        <span class="question-badge">Question</span>
+        <button class="danger-btn remove-question-btn" type="button">Remove</button>
+      </div>
+
+      <label>
+        Question text
+        <input class="question-text" type="text" placeholder="Enter your question..." required />
+      </label>
+
+      <label>
+        Question type
+        <select class="question-type">
+          <option value="short_answer">Short Answer</option>
+          <option value="paragraph">Paragraph</option>
+          <option value="multiple_choice">Multiple Choice</option>
+        </select>
+      </label>
+
+      <div class="choices-wrap hidden">
+        <label>
+          Choices
+          <textarea class="question-choices" rows="4" placeholder="One choice per line"></textarea>
+        </label>
+      </div>
+
+      <label class="checkbox-inline">
+        <input class="question-required" type="checkbox" checked />
+        Required
+      </label>
+    </article>
+  </template>
+
+  <script src="material.js"></script>
+</body>
+</html>
